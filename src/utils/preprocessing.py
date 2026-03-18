@@ -255,6 +255,39 @@ def estimate_point_colors(
     return points3D
 
 
+def split_images(images: dict, test_interval: int = 8) -> tuple[dict, dict]:
+    """
+    画像を最適化用と評価用に分離する関数
+
+    Parameters
+    ----------
+    images: dict
+        parse_images_txt の返り値
+    test_interval: int = 8
+        何枚ごとに 1 枚を評価用にするか
+
+    Returns
+    ----------
+    train_images: dict
+        最適化用の画像データ
+    test_images: dict
+        評価用の画像データ
+    """
+    # 画像 ID をソートして順序を固定
+    sorted_ids = sorted(images.keys())
+
+    # 分離
+    train_images = {}
+    test_images = {}
+    for i, image_id in enumerate(sorted_ids):
+        if i % test_interval == 0:
+            test_images[image_id] = images[image_id]
+        else:
+            train_images[image_id] = images[image_id]
+
+    return train_images, test_images
+
+
 def load_images(images_dir: str, images: dict) -> dict:
     """
     画像ファイルを読み込んでテンソルに変換する関数

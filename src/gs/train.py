@@ -10,7 +10,8 @@ from src.gs.model import GaussianModel
 from src.utils.cfg_diff import get_config, get_diff
 from src.utils.preprocessing import (
     parse_cameras_txt, parse_images_txt,
-    parse_points3D_txt, estimate_point_colors, load_images
+    parse_points3D_txt, estimate_point_colors,
+    split_images, load_images
 )
 from src.utils.result import plot_training_curve
 from src.utils.trainer import Options, train_gs
@@ -62,10 +63,16 @@ images_dir = data_dir / "images"
 cameras = parse_cameras_txt(str(sparse_dir / "cameras.txt"))
 images = parse_images_txt(str(sparse_dir / "images.txt"))
 points3D = parse_points3D_txt(str(sparse_dir / "points3D.txt"))
-image_tensors = load_images(str(images_dir), images)
+
+# 最適化用画像と評価用画像の分離
+test_interval = cfg["data"].get("test_interval", 8)
+train_images, test_images = split_images(images, test_interval)
+train_tensors = load_images(str(images_dir), train_images)
+test_tensors = load_images(str(images_dir), test_images)
 logger.info(
     f"データ:\tカメラ数={len(cameras)}\t"
-    f"画像数={len(images)}\t"
+    f"最適化用画像={len(train_images)}\t"
+    f"評価用画像={len(test_images)}\t"
     f"点群数={len(points3D)}"
 )
 
@@ -89,7 +96,7 @@ logger.info(f"Learning rate: {cfg['training']['learning_rate']}")
 start_time = time.time()
 model, train_loss_list = train_gs(
     model=model, optimizer=optimizer,
-    images=images, image_tensors=image_tensors,
+    images=train_images, image_tensors=train_tensors,
     cameras=cameras, cfg=cfg, device=device
 )
 end_time = time.time()
