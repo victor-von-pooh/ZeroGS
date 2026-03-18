@@ -10,7 +10,7 @@ from src.gs.model import GaussianModel
 from src.utils.cfg_diff import get_config, get_diff
 from src.utils.preprocessing import (
     parse_cameras_txt, parse_images_txt,
-    parse_points3D_txt, load_images
+    parse_points3D_txt, estimate_point_colors, load_images
 )
 from src.utils.result import plot_training_curve
 from src.utils.trainer import Options, train_gs
@@ -68,6 +68,10 @@ logger.info(
     f"画像数={len(images)}\t"
     f"点群数={len(points3D)}"
 )
+
+# 初期点群の色推定
+logger.info("初期点群の色推定")
+points3D = estimate_point_colors(points3D, images, cameras, str(images_dir))
 
 # モデル初期化
 logger.info("モデル初期化")
