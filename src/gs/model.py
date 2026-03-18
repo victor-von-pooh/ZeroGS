@@ -150,9 +150,18 @@ class GaussianModel(nn.Module):
         colors = colors[sort_indices]
         opacities = opacities[sort_indices]
 
-        # レンダリング用のバッファ
-        rendered = torch.zeros(3, height, width, device=device)
-        transmittance = torch.ones(height, width, device=device)
+        # 画像範囲内の Gaussian のみ残す
+        margin = 3.0 * torch.sqrt(torch.max(cov2d[:, 0, 0], cov2d[:, 1, 1]))
+        visible = (
+            (means2d[:, 0] + margin > 0)
+            & (means2d[:, 0] - margin < width)
+            & (means2d[:, 1] + margin > 0)
+            & (means2d[:, 1] - margin < height)
+        )
+        means2d = means2d[visible]
+        inv_cov2d = inv_cov2d[visible]
+        colors = colors[visible]
+        opacities = opacities[visible]
 
         # ピクセルグリッドの作成
         py, px = torch.meshgrid(
@@ -161,52 +170,55 @@ class GaussianModel(nn.Module):
             indexing="ij"
         )
 
-        # 各 Gaussian を前方から順にレンダリング
-        for i in range(means2d.shape[0]):
-            # バウンディングボックスの計算
-            radius = 3.0 * torch.sqrt(
-                torch.max(cov2d[i, 0, 0], cov2d[i, 1, 1])
-            )
-            x_min = max(0, int(means2d[i, 0] - radius))
-            x_max = min(width, int(means2d[i, 0] + radius) + 1)
-            y_min = max(0, int(means2d[i, 1] - radius))
-            y_max = min(height, int(means2d[i, 1] + radius) + 1)
+        # チャンク方式でレンダリング
+        n_gaussians = means2d.shape[0]
+        chunk_size = 256
+        rendered = torch.zeros(3, height, width, device=device)
+        running_T = torch.ones(height, width, device=device)
 
-            # バウンディングボックスが有効かチェック
-            if x_min >= x_max or y_min >= y_max:
-                continue
+        # チャンクごとに処理
+        for start in range(0, n_gaussians, chunk_size):
+            # チャンクの終了インデックス
+            end = min(start + chunk_size, n_gaussians)
 
-            # バウンディングボックス内のピクセルのみ処理
-            dx = px[y_min:y_max, x_min:x_max] - means2d[i, 0]
-            dy = py[y_min:y_max, x_min:x_max] - means2d[i, 1]
+            # チャンク内の差分計算
+            dx = px.unsqueeze(0) - means2d[start:end, 0].reshape(-1, 1, 1)
+            dy = py.unsqueeze(0) - means2d[start:end, 1].reshape(-1, 1, 1)
 
             # マハラノビス距離
+            ic = inv_cov2d[start:end]
             maha = (
-                inv_cov2d[i, 0, 0] * dx * dx
-                + (inv_cov2d[i, 0, 1] + inv_cov2d[i, 1, 0]) * dx * dy
-                + inv_cov2d[i, 1, 1] * dy * dy
+                ic[:, 0, 0].reshape(-1, 1, 1) * dx * dx
+                + (ic[:, 0, 1] + ic[:, 1, 0]).reshape(-1, 1, 1) * dx * dy
+                + ic[:, 1, 1].reshape(-1, 1, 1) * dy * dy
             )
 
-            # ガウシアン重み × 不透明度
-            alpha = (opacities[i, 0] * torch.exp(-0.5 * maha)).clamp(max=0.99)
+            # アルファ
+            alpha_chunk = (
+                opacities[start:end, 0].reshape(-1, 1, 1)
+                * torch.exp(-0.5 * maha)
+            ).clamp(max=0.99)
 
-            # 透過率の取得
-            t_patch = transmittance[y_min:y_max, x_min:x_max]
+            # チャンク内の透過率
+            one_minus_alpha = 1.0 - alpha_chunk
+            chunk_T = torch.cat(
+                [
+                    torch.ones(1, height, width, device=device),
+                    torch.cumprod(one_minus_alpha[:-1], dim=0)
+                ], dim=0
+            )
+
+            # running_T を掛けて実際の透過率にする
+            actual_T = running_T.unsqueeze(0) * chunk_T
 
             # 色の蓄積
-            contribution = t_patch.unsqueeze(0) * \
-                           alpha.unsqueeze(0) * colors[i].reshape(3, 1, 1)
-            rendered = rendered.clone()
-            rendered[:, y_min:y_max, x_min:x_max] = (
-                rendered[:, y_min:y_max, x_min:x_max] + contribution
-            )
+            weight = actual_T * alpha_chunk
+            rendered = rendered + (
+                weight.unsqueeze(1) * colors[start:end].reshape(-1, 3, 1, 1)
+            ).sum(dim=0)
 
-            # 透過率の更新
-            new_transmittance = transmittance.clone()
-            new_transmittance[y_min:y_max, x_min:x_max] = t_patch * (
-                1 - alpha
-            )
-            transmittance = new_transmittance
+            # running_T の更新
+            running_T = running_T * one_minus_alpha.prod(dim=0)
 
         return rendered
 
