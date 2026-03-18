@@ -1,0 +1,8 @@
+{
+    "phase_type": "gs",
+    "log": {
+        "log_file": "gs.log",
+        "log_formatter": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    },
+    "seed": 42
+}
