@@ -4,5 +4,18 @@
         "log_file": "gs.log",
         "log_formatter": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     },
-    "seed": 42
+    "seed": 42,
+    "data": {
+        "data_dir": "data"
+    },
+    "training": {
+        "iterations": 1000,
+        "learning_rate": 0.001,
+        "optimizer": "adam",
+        "adam_betas": [0.9, 0.999],
+        "adam_eps": 1e-8,
+        "adam_weight_decay": 0,
+        "lambda_ssim": 0.2
+    },
+    "device": "auto"
 }
