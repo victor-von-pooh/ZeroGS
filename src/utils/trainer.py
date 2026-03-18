@@ -2,6 +2,7 @@ import random
 
 import torch
 from torch import nn, optim
+from torchvision import transforms
 from tqdm import tqdm
 
 from src.utils.loss import gs_loss
@@ -134,6 +135,7 @@ def train_gs(
     # 学習設定の取得
     num_iterations = cfg["training"]["iterations"]
     lambda_ssim = cfg["training"].get("lambda_ssim", 0.2)
+    resolution_scale = cfg["training"].get("resolution_scale", 1)
 
     # 画像 ID のリスト
     image_ids = list(images.keys())
@@ -152,8 +154,20 @@ def train_gs(
             image_data = images[image_id]
             cam = cameras[image_data["camera_id"]]
 
-            # 正解画像の取得
+            # レンダリング解像度の計算
+            render_w = cam["width"] // resolution_scale
+            render_h = cam["height"] // resolution_scale
+
+            # カメラ内部パラメータのスケーリング
+            scaled_params = cam["params"].copy()
+            scaled_params[0] /= resolution_scale
+            scaled_params[1] /= resolution_scale
+            scaled_params[2] /= resolution_scale
+
+            # 正解画像のリサイズ
             gt = image_tensors[image_id].to(device)
+            resize = transforms.Resize((render_h, render_w))
+            gt = resize(gt)
 
             # 勾配の初期化
             optimizer.zero_grad()
@@ -161,7 +175,7 @@ def train_gs(
             # 順伝播の計算
             rendered = model(
                 image_data["qvec"], image_data["tvec"],
-                cam["params"], cam["width"], cam["height"]
+                scaled_params, render_w, render_h
             )
 
             # 損失計算

@@ -150,7 +150,7 @@ class GaussianModel(nn.Module):
         colors = colors[sort_indices]
         opacities = opacities[sort_indices]
 
-        # レンダリング
+        # レンダリング用のバッファ
         rendered = torch.zeros(3, height, width, device=device)
         transmittance = torch.ones(height, width, device=device)
 
@@ -194,13 +194,19 @@ class GaussianModel(nn.Module):
             t_patch = transmittance[y_min:y_max, x_min:x_max]
 
             # 色の蓄積
-            for c in range(3):
-                rendered[c, y_min:y_max, x_min:x_max] += (
-                    t_patch * alpha * colors[i, c]
-                )
+            contribution = t_patch.unsqueeze(0) * \
+                           alpha.unsqueeze(0) * colors[i].reshape(3, 1, 1)
+            rendered = rendered.clone()
+            rendered[:, y_min:y_max, x_min:x_max] = (
+                rendered[:, y_min:y_max, x_min:x_max] + contribution
+            )
 
             # 透過率の更新
-            transmittance[y_min:y_max, x_min:x_max] = t_patch * (1 - alpha)
+            new_transmittance = transmittance.clone()
+            new_transmittance[y_min:y_max, x_min:x_max] = t_patch * (
+                1 - alpha
+            )
+            transmittance = new_transmittance
 
         return rendered
 
