@@ -1,4 +1,5 @@
 configs/experiment/
+data/
 experiment_tools/
 venv/
 
