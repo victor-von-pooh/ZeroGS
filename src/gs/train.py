@@ -13,7 +13,7 @@ from src.utils.preprocessing import (
     parse_points3D_txt, estimate_point_colors,
     split_images, load_images
 )
-from src.utils.result import plot_training_curve
+from src.utils.result import plot_training_curve, evaluate
 from src.utils.trainer import Options, train_gs
 
 # プロジェクトルートを取得
@@ -114,3 +114,14 @@ logger.info("損失統計")
 logger.info(f"最終損失: {train_loss_list[-1]:.4f}")
 logger.info(f"最小損失: {min(train_loss_list):.4f}")
 logger.info(f"平均損失: {np.mean(train_loss_list):.4f}")
+
+# 評価
+logger.info("評価実行")
+resolution_scale = cfg["training"].get("resolution_scale", 1)
+metrics = evaluate(
+    model, test_images, test_tensors,
+    cameras, device, resolution_scale
+)
+logger.info(f"PSNR:  {metrics['psnr']:.2f}")
+logger.info(f"SSIM:  {metrics['ssim']:.4f}")
+logger.info(f"LPIPS: {metrics['lpips']:.4f}")
