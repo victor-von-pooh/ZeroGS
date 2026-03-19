@@ -11,10 +11,14 @@ outputs/
 └── gs/
     └── YYYY-MM-DD/
         └── HH-MM-SS/
-            └── gs.log    # 実験ログ
+            ├── gs.log               # 実験ログ
+            ├── training_curve.png   # 学習曲線
+            ├── final_model.pth      # 学習済みモデル
+            ├── gaussians.ply        # Gaussian の位置と色を PLY 形式で出力
+            └── renders/             # 評価用画像のレンダリング結果
+                ├── frame_XXXX.png   # 左が正解画像、右がレンダリング画像
+                └── ...
 ```
-
-出力内容は実装の進捗に応じて追加される。
 
 ## Git 管理
 
