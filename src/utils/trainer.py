@@ -137,6 +137,20 @@ def train_gs(
     lambda_ssim = cfg["training"].get("lambda_ssim", 0.2)
     resolution_scale = cfg["training"].get("resolution_scale", 1)
 
+    # ADC 設定の取得
+    adc_cfg = cfg["training"].get("adc", {})
+    adc_start = adc_cfg.get("start_iteration", 500)
+    adc_interval = adc_cfg.get("interval", 100)
+    adc_stop = adc_cfg.get("stop_iteration", 15000)
+    opacity_reset_interval = adc_cfg.get("opacity_reset_interval", 3000)
+    grad_threshold = adc_cfg.get("grad_threshold", 0.0002)
+    scale_threshold = adc_cfg.get("scale_threshold", 0.01)
+    opacity_threshold = adc_cfg.get("opacity_threshold", 0.005)
+    max_gaussians = adc_cfg.get("max_gaussians", 100000)
+
+    # ADC 用の勾配蓄積バッファを初期化
+    model.setup_adc()
+
     # 画像 ID のリスト
     image_ids = list(images.keys())
 
@@ -183,7 +197,32 @@ def train_gs(
 
             # 逆伝播の計算とパラメータの更新
             loss.backward()
+
+            # 勾配の蓄積
+            if iteration < adc_stop:
+                model.accumulate_gradients()
+
+            # パラメータの更新
             optimizer.step()
+
+            # ガウシアンの密化・剪定
+            if adc_start <= iteration < adc_stop:
+                if (iteration - adc_start) % adc_interval == 0:
+                    # 勾配の蓄積に基づいて, ガウシアンを密化・剪定
+                    model.densify_and_prune(
+                        grad_threshold, scale_threshold,
+                        opacity_threshold, max_gaussians
+                    )
+
+                    # Optimizer の再構築
+                    optimizer = optim.Adam(
+                        params=model.parameters(),
+                        lr=optimizer.param_groups[0]["lr"]
+                    )
+
+            # 不透明度のリセット
+            if iteration > 0 and iteration % opacity_reset_interval == 0:
+                model.reset_opacities()
 
             # 損失を記録
             iteration_loss = loss.item()

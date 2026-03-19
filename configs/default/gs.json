@@ -15,7 +15,17 @@
         "adam_betas": [0.9, 0.999],
         "adam_eps": 1e-8,
         "adam_weight_decay": 0,
-        "lambda_ssim": 0.2
+        "lambda_ssim": 0.2,
+        "adc": {
+            "start_iteration": 500,
+            "interval": 100,
+            "stop_iteration": 15000,
+            "opacity_reset_interval": 3000,
+            "grad_threshold": 0.0002,
+            "scale_threshold": 0.01,
+            "opacity_threshold": 0.005,
+            "max_gaussians": 100000
+        }
     },
     "device": "auto"
 }

@@ -222,6 +222,194 @@ class GaussianModel(nn.Module):
 
         return rendered
 
+    def setup_adc(self):
+        """
+        ADC 用の勾配蓄積バッファを初期化する関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 2D 位置勾配のノルムの蓄積
+        self.grad_accum = torch.zeros(
+            self.num_gaussians, device=self.means.device
+        )
+
+        # 蓄積回数
+        self.grad_count = torch.zeros(
+            self.num_gaussians, device=self.means.device
+        )
+
+    def accumulate_gradients(self):
+        """
+        means の勾配ノルムを蓄積する関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # means の勾配が存在する場合のみ蓄積
+        if self.means.grad is not None:
+            grad_norm = self.means.grad.norm(dim=-1)
+            self.grad_accum += grad_norm
+            self.grad_count += 1
+
+    def densify_and_prune(
+        self, grad_threshold: float = 0.0002, scale_threshold: float = 0.01,
+        opacity_threshold: float = 0.005, max_gaussians: int = 100000
+    ):
+        """
+        Adaptive Density Control を実行する関数
+
+        Parameters
+        ----------
+        grad_threshold: float = 0.0002
+            勾配の閾値
+        scale_threshold: float = 0.01
+            スケールの閾値
+        opacity_threshold: float = 0.005
+            不透明度の閾値
+        max_gaussians: int = 100000
+            Gaussian の最大数
+
+        Returns
+        ----------
+        None
+        """
+        # デバイスの取得
+        device = self.means.device
+
+        # 平均勾配の計算
+        avg_grad = self.grad_accum / self.grad_count.clamp(min=1)
+
+        # 勾配が閾値を超える Gaussian
+        high_grad_mask = avg_grad > grad_threshold
+
+        # スケールの最大値
+        max_scale = torch.exp(self.scales).max(dim=-1).values
+
+        # Clone
+        clone_mask = high_grad_mask & (max_scale <= scale_threshold)
+
+        # Split
+        split_mask = high_grad_mask & (max_scale > scale_threshold)
+
+        # 勾配が大きく, スケールが小さい Gaussian を複製
+        if clone_mask.any():
+            clone_means = self.means.data[clone_mask]
+            clone_colors = self.colors.data[clone_mask]
+            clone_opacities = self.opacities.data[clone_mask]
+            clone_scales = self.scales.data[clone_mask]
+            clone_rotations = self.rotations.data[clone_mask]
+        else:
+            clone_means = torch.empty(0, 3, device=device)
+            clone_colors = torch.empty(0, 3, device=device)
+            clone_opacities = torch.empty(0, 1, device=device)
+            clone_scales = torch.empty(0, 3, device=device)
+            clone_rotations = torch.empty(0, 4, device=device)
+
+        # 勾配が大きく, スケールが大きい Gaussian を分割
+        if split_mask.any():
+            # 分割元のパラメータ
+            split_means = self.means.data[split_mask]
+            split_colors = self.colors.data[split_mask]
+            split_opacities = self.opacities.data[split_mask]
+            split_scales = self.scales.data[split_mask] - np.log(1.6)
+            split_rotations = self.rotations.data[split_mask]
+
+            # スケール方向にランダムにオフセット
+            stdev = torch.exp(self.scales.data[split_mask])
+            offset = torch.randn_like(split_means) * stdev
+            new_means_1 = split_means + offset
+            new_means_2 = split_means - offset
+
+            # 分割後のパラメータを結合
+            split_means = torch.cat([new_means_1, new_means_2], dim=0)
+            split_colors = torch.cat([split_colors, split_colors], dim=0)
+            split_opacities = torch.cat(
+                [split_opacities, split_opacities], dim=0
+            )
+            split_scales = torch.cat([split_scales, split_scales], dim=0)
+            split_rotations = torch.cat(
+                [split_rotations, split_rotations], dim=0
+            )
+        else:
+            # 分割する Gaussian がない場合は空のテンソルを用意
+            split_means = torch.empty(0, 3, device=device)
+            split_colors = torch.empty(0, 3, device=device)
+            split_opacities = torch.empty(0, 1, device=device)
+            split_scales = torch.empty(0, 3, device=device)
+            split_rotations = torch.empty(0, 4, device=device)
+
+        # 不透明度が閾値以下の Gaussian と分割された Gaussian を削除
+        opacity_vals = torch.sigmoid(self.opacities.data[:, 0])
+        prune_mask = (opacity_vals < opacity_threshold) | split_mask
+        keep_mask = ~prune_mask
+
+        # 残す Gaussian と複製・分割された Gaussian を結合
+        new_means = torch.cat([
+            self.means.data[keep_mask], clone_means, split_means
+        ], dim=0)
+        new_colors = torch.cat([
+            self.colors.data[keep_mask], clone_colors, split_colors
+        ], dim=0)
+        new_opacities = torch.cat([
+            self.opacities.data[keep_mask], clone_opacities, split_opacities
+        ], dim=0)
+        new_scales = torch.cat([
+            self.scales.data[keep_mask], clone_scales, split_scales
+        ], dim=0)
+        new_rotations = torch.cat([
+            self.rotations.data[keep_mask], clone_rotations, split_rotations
+        ], dim=0)
+
+        # Gaussian の最大数を超えた場合は不透明度の低い順に削除
+        if new_means.shape[0] > max_gaussians:
+            new_opacity_vals = torch.sigmoid(new_opacities[:, 0])
+            topk = torch.topk(
+                new_opacity_vals, max_gaussians
+            ).indices
+            new_means = new_means[topk]
+            new_colors = new_colors[topk]
+            new_opacities = new_opacities[topk]
+            new_scales = new_scales[topk]
+            new_rotations = new_rotations[topk]
+
+        # nn.Parameter として再設定
+        self.means = nn.Parameter(new_means)
+        self.colors = nn.Parameter(new_colors)
+        self.opacities = nn.Parameter(new_opacities)
+        self.scales = nn.Parameter(new_scales)
+        self.rotations = nn.Parameter(new_rotations)
+
+        # 勾配バッファをリセット
+        self.setup_adc()
+
+    def reset_opacities(self, new_opacity: float = 0.01):
+        """
+        全 Gaussian の不透明度をリセットする関数
+
+        Parameters
+        ----------
+        new_opacity: float = 0.01
+            リセット後の不透明度
+
+        Returns
+        ----------
+        None
+        """
+        # 逆シグモイド変換した値で上書き
+        inv_sigmoid = np.log(new_opacity / (1.0 - new_opacity))
+        self.opacities.data.fill_(inv_sigmoid)
+
     @property
     def num_gaussians(self) -> int:
         """
