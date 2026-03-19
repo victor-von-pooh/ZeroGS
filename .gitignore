@@ -1,6 +1,7 @@
 configs/experiment/
 data/
 experiment_tools/
+outputs/
 venv/
 
 __pycache__
