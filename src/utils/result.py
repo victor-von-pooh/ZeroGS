@@ -181,7 +181,7 @@ def evaluate(
 
 def export_ply(model: torch.nn.Module, output_path: str) -> None:
     """
-    Gaussian の位置と色を PLY ファイルに書き出す関数
+    Gaussian の全パラメータを標準 3DGS PLY 形式で書き出す関数
 
     Parameters
     ----------
@@ -194,29 +194,62 @@ def export_ply(model: torch.nn.Module, output_path: str) -> None:
     ----------
     None
     """
-    # 位置と SH の DC 項から色を取得
-    means = model.means.detach().cpu().numpy()
-    sh_dc = model.sh_coeffs.detach().cpu().numpy()[:, 0]
-    c0 = 0.28209479177387814
-    rgb = np.clip(sh_dc * c0 * 255.0, 0, 255).astype(np.uint8)
-    n_points = means.shape[0]
+    import struct
 
-    # PLY ヘッダーとデータを書き出し
-    with open(output_path, "w") as f:
-        f.write("ply\n")
-        f.write("format ascii 1.0\n")
-        f.write(f"element vertex {n_points}\n")
-        f.write("property float x\n")
-        f.write("property float y\n")
-        f.write("property float z\n")
-        f.write("property uchar red\n")
-        f.write("property uchar green\n")
-        f.write("property uchar blue\n")
-        f.write("end_header\n")
+    # 各パラメータを numpy に変換
+    means = model.means.detach().cpu().numpy()
+    sh_coeffs = model.sh_coeffs.detach().cpu().numpy()
+    opacities = model.opacities.detach().cpu().numpy()
+    scales = model.scales.detach().cpu().numpy()
+    rotations = model.rotations.detach().cpu().numpy()
+    n_points = means.shape[0]
+    num_sh = sh_coeffs.shape[1]
+
+    # SH 係数を DC と rest に分離
+    f_dc = sh_coeffs[:, 0, :]
+    num_rest = (num_sh - 1) * 3
+    f_rest = sh_coeffs[:, 1:, :].reshape(n_points, -1)
+
+    # PLY ヘッダーを構築
+    header = "ply\n"
+    header += "format binary_little_endian 1.0\n"
+    header += f"element vertex {n_points}\n"
+    header += "property float x\n"
+    header += "property float y\n"
+    header += "property float z\n"
+    header += "property float nx\n"
+    header += "property float ny\n"
+    header += "property float nz\n"
+    for i in range(3):
+        header += f"property float f_dc_{i}\n"
+    for i in range(num_rest):
+        header += f"property float f_rest_{i}\n"
+    header += "property float opacity\n"
+    for i in range(3):
+        header += f"property float scale_{i}\n"
+    for i in range(4):
+        header += f"property float rot_{i}\n"
+    header += "end_header\n"
+
+    # バイナリデータを書き出し
+    with open(output_path, "wb") as f:
+        f.write(header.encode("ascii"))
         for j in range(n_points):
-            x, y, z = means[j]
-            r, g, b = rgb[j]
-            f.write(f"{x} {y} {z} {r} {g} {b}\n")
+            # 位置
+            f.write(struct.pack("<fff", *means[j]))
+            # 法線は 0
+            f.write(struct.pack("<fff", 0.0, 0.0, 0.0))
+            # SH DC 係数
+            f.write(struct.pack("<fff", *f_dc[j]))
+            # SH rest 係数
+            for k in range(num_rest):
+                f.write(struct.pack("<f", f_rest[j, k]))
+            # 不透明度
+            f.write(struct.pack("<f", opacities[j, 0]))
+            # スケール
+            f.write(struct.pack("<fff", *scales[j]))
+            # 回転
+            f.write(struct.pack("<ffff", *rotations[j]))
 
 
 def save_rendered_images(
