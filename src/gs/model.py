@@ -4,10 +4,91 @@ import torch
 import torch.nn as nn
 
 
+def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
+    """
+    球面調和関数を評価する関数
+
+    Parameters
+    ----------
+    sh_coeffs: torch.Tensor
+        SH 係数
+    dirs: torch.Tensor
+        正規化された視線方向ベクトル
+
+    Returns
+    ----------
+    colors: torch.Tensor
+        評価された色
+    """
+    # SH 基底関数の定数
+    c0 = 0.28209479177387814
+    c1 = 0.4886025119029199
+    c2 = [
+        1.0925484305920792, -1.0925484305920792, 0.31539156525252005,
+        -1.0925484305920792, 0.5462742152960396
+    ]
+    c3 = [
+        -0.5900435899266435, 2.890611442640554, -0.4570457994644658,
+        0.3731763325901154, -0.4570457994644658, 1.445305721320277,
+        -0.5900435899266435
+    ]
+
+    # 方向ベクトルの成分を取得
+    x = dirs[:, 0:1]
+    y = dirs[:, 1:2]
+    z = dirs[:, 2:3]
+
+    # 二乗・積の事前計算
+    xx, yy, zz = x * x, y * y, z * z
+    xy, yz, xz = x * y, y * z, x * z
+
+    # Degree 0
+    result = c0 * sh_coeffs[:, 0]
+
+    # Degree 1
+    if sh_coeffs.shape[1] > 1:
+        result = result + c1 * (
+            -y * sh_coeffs[:, 1]
+            + z * sh_coeffs[:, 2]
+            - x * sh_coeffs[:, 3]
+        )
+
+    # Degree 2
+    if sh_coeffs.shape[1] > 4:
+        result = result + (
+            c2[0] * xy * sh_coeffs[:, 4]
+            + c2[1] * yz * sh_coeffs[:, 5]
+            + c2[2] * (2.0 * zz - xx - yy) * sh_coeffs[:, 6]
+            + c2[3] * xz * sh_coeffs[:, 7]
+            + c2[4] * (xx - yy) * sh_coeffs[:, 8]
+        )
+
+    # Degree 3
+    if sh_coeffs.shape[1] > 9:
+        result = result + (
+            c3[0] * y * (3.0 * xx - yy) * sh_coeffs[:, 9]
+            + c3[1] * xy * z * sh_coeffs[:, 10]
+            + c3[2] * y * (4.0 * zz - xx - yy) * sh_coeffs[:, 11]
+            + c3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh_coeffs[:, 12]
+            + c3[4] * x * (4.0 * zz - xx - yy) * sh_coeffs[:, 13]
+            + c3[5] * z * (xx - yy) * sh_coeffs[:, 14]
+            + c3[6] * x * (xx - 3.0 * yy) * sh_coeffs[:, 15]
+        )
+
+    # [0, 1] にクランプ
+    colors = result.clamp(min=0.0, max=1.0)
+
+    return colors
+
+
 class GaussianModel(nn.Module):
-    def __init__(self, points3D: dict):
+    def __init__(self, points3D: dict, sh_degree: int = 3):
         # 親クラスのコンストラクタを呼び出す
         super(GaussianModel, self).__init__()
+
+        # SH の次数と係数数を保存
+        self.sh_degree = sh_degree
+        self.num_sh_coeffs = (sh_degree + 1) ** 2
 
         # points3D から numpy 配列を構築
         point_ids = sorted(points3D.keys())
@@ -18,14 +99,19 @@ class GaussianModel(nn.Module):
             [points3D[pid]["rgb"] for pid in point_ids], dtype=np.float32
         )
 
+        # Gaussian の数
+        n = len(point_ids)
+
         # 位置
         self.means = nn.Parameter(torch.from_numpy(xyz))
 
-        # 色
-        self.colors = nn.Parameter(torch.from_numpy(rgb / 255.0))
+        # SH 係数 (N, K, 3): DC 項を初期色から初期化, 高次項は 0
+        c0 = 0.28209479177387814
+        sh_coeffs = torch.zeros(n, self.num_sh_coeffs, 3, dtype=torch.float32)
+        sh_coeffs[:, 0] = torch.from_numpy(rgb / 255.0) / c0
+        self.sh_coeffs = nn.Parameter(sh_coeffs)
 
         # 不透明度
-        n = len(point_ids)
         init_opacity = 0.1
         inv_sigmoid_opacity = np.log(init_opacity / (1.0 - init_opacity))
         self.opacities = nn.Parameter(
@@ -102,12 +188,23 @@ class GaussianModel(nn.Module):
         # Gaussian の平均をカメラ座標系に変換
         means_cam = (r_cam @ self.means.T).T + t_cam
 
+        # カメラ位置をワールド座標で計算
+        cam_pos = -r_cam.T @ t_cam
+
         # カメラの前方にある点のみを使用
         valid_mask = means_cam[:, 2] > 0.01
         means_cam = means_cam[valid_mask]
         cov3d = cov3d[valid_mask]
-        colors = self.colors[valid_mask]
+        sh_coeffs = self.sh_coeffs[valid_mask]
         opacities = torch.sigmoid(self.opacities[valid_mask])
+
+        # 視線方向の計算
+        valid_means = self.means[valid_mask]
+        view_dirs = cam_pos.unsqueeze(0) - valid_means
+        view_dirs = view_dirs / view_dirs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+
+        # SH 評価で色を取得
+        colors = evaluate_sh(sh_coeffs, view_dirs)
 
         # ピクセル座標の計算
         x = means_cam[:, 0]
@@ -305,13 +402,13 @@ class GaussianModel(nn.Module):
         # 勾配が大きく, スケールが小さい Gaussian を複製
         if clone_mask.any():
             clone_means = self.means.data[clone_mask]
-            clone_colors = self.colors.data[clone_mask]
+            clone_sh = self.sh_coeffs.data[clone_mask]
             clone_opacities = self.opacities.data[clone_mask]
             clone_scales = self.scales.data[clone_mask]
             clone_rotations = self.rotations.data[clone_mask]
         else:
             clone_means = torch.empty(0, 3, device=device)
-            clone_colors = torch.empty(0, 3, device=device)
+            clone_sh = torch.empty(0, self.num_sh_coeffs, 3, device=device)
             clone_opacities = torch.empty(0, 1, device=device)
             clone_scales = torch.empty(0, 3, device=device)
             clone_rotations = torch.empty(0, 4, device=device)
@@ -320,7 +417,7 @@ class GaussianModel(nn.Module):
         if split_mask.any():
             # 分割元のパラメータ
             split_means = self.means.data[split_mask]
-            split_colors = self.colors.data[split_mask]
+            split_sh = self.sh_coeffs.data[split_mask]
             split_opacities = self.opacities.data[split_mask]
             split_scales = self.scales.data[split_mask] - np.log(1.6)
             split_rotations = self.rotations.data[split_mask]
@@ -333,7 +430,7 @@ class GaussianModel(nn.Module):
 
             # 分割後のパラメータを結合
             split_means = torch.cat([new_means_1, new_means_2], dim=0)
-            split_colors = torch.cat([split_colors, split_colors], dim=0)
+            split_sh = torch.cat([split_sh, split_sh], dim=0)
             split_opacities = torch.cat(
                 [split_opacities, split_opacities], dim=0
             )
@@ -344,7 +441,7 @@ class GaussianModel(nn.Module):
         else:
             # 分割する Gaussian がない場合は空のテンソルを用意
             split_means = torch.empty(0, 3, device=device)
-            split_colors = torch.empty(0, 3, device=device)
+            split_sh = torch.empty(0, self.num_sh_coeffs, 3, device=device)
             split_opacities = torch.empty(0, 1, device=device)
             split_scales = torch.empty(0, 3, device=device)
             split_rotations = torch.empty(0, 4, device=device)
@@ -358,8 +455,8 @@ class GaussianModel(nn.Module):
         new_means = torch.cat(
             [self.means.data[keep_mask], clone_means, split_means], dim=0
         )
-        new_colors = torch.cat(
-            [self.colors.data[keep_mask], clone_colors, split_colors], dim=0
+        new_sh = torch.cat(
+            [self.sh_coeffs.data[keep_mask], clone_sh, split_sh], dim=0
         )
         new_opacities = torch.cat(
             [
@@ -382,14 +479,14 @@ class GaussianModel(nn.Module):
             new_opacity_vals = torch.sigmoid(new_opacities[:, 0])
             topk = torch.topk(new_opacity_vals, max_gaussians).indices
             new_means = new_means[topk]
-            new_colors = new_colors[topk]
+            new_sh = new_sh[topk]
             new_opacities = new_opacities[topk]
             new_scales = new_scales[topk]
             new_rotations = new_rotations[topk]
 
         # nn.Parameter として再設定
         self.means = nn.Parameter(new_means)
-        self.colors = nn.Parameter(new_colors)
+        self.sh_coeffs = nn.Parameter(new_sh)
         self.opacities = nn.Parameter(new_opacities)
         self.scales = nn.Parameter(new_scales)
         self.rotations = nn.Parameter(new_rotations)

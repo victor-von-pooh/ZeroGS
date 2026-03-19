@@ -82,7 +82,8 @@ points3D = estimate_point_colors(points3D, images, cameras, str(images_dir))
 
 # モデル初期化
 logger.info("モデル初期化")
-model = GaussianModel(points3D)
+sh_degree = cfg.get("sh_degree", 3)
+model = GaussianModel(points3D, sh_degree=sh_degree)
 model = model.to(device)
 logger.info(f"Gaussian 数: {model.num_gaussians}")
 
