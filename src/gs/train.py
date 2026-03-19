@@ -13,7 +13,10 @@ from src.utils.preprocessing import (
     parse_points3D_txt, estimate_point_colors,
     split_images, load_images
 )
-from src.utils.result import plot_training_curve, evaluate
+from src.utils.result import (
+    plot_training_curve, evaluate,
+    export_ply, save_rendered_images
+)
 from src.utils.trainer import Options, train_gs
 
 # プロジェクトルートを取得
@@ -93,12 +96,35 @@ optimizer = options.getter()
 logger.info(f"Optimizer: {cfg['training']['optimizer']}")
 logger.info(f"Learning rate: {cfg['training']['learning_rate']}")
 
+# Scheduler 初期化
+scheduler = None
+if cfg["training"]["scheduler"]["use"]:
+    scheduler_type = cfg["training"]["scheduler"]["type"]
+    if scheduler_type == "StepLR":
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=cfg["training"]["scheduler"]["step_size"],
+            gamma=cfg["training"]["scheduler"]["gamma"]
+        )
+    elif scheduler_type == "ReduceLROnPlateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=cfg["training"]["scheduler"]["mode"],
+            factor=cfg["training"]["scheduler"]["factor"],
+            patience=cfg["training"]["scheduler"]["patience"],
+            min_lr=cfg["training"]["scheduler"]["min_lr"]
+        )
+    logger.info(f"Scheduler: {scheduler_type}")
+else:
+    logger.info("Scheduler: なし")
+
 # 学習実行
 start_time = time.time()
 model, train_loss_list = train_gs(
     model=model, optimizer=optimizer,
     images=train_images, image_tensors=train_tensors,
-    cameras=cameras, cfg=cfg, device=device
+    cameras=cameras, cfg=cfg, device=device,
+    scheduler=scheduler
 )
 end_time = time.time()
 elapsed_time = end_time - start_time
@@ -126,3 +152,21 @@ metrics = evaluate(
 logger.info(f"PSNR:  {metrics['psnr']:.2f}")
 logger.info(f"SSIM:  {metrics['ssim']:.4f}")
 logger.info(f"LPIPS: {metrics['lpips']:.4f}")
+
+# モデルの保存
+model_path = output_dir / "final_model.pth"
+torch.save(model.state_dict(), model_path)
+logger.info(f"モデル保存先: {model_path}")
+
+# PLY ファイルの保存
+ply_path = output_dir / "gaussians.ply"
+export_ply(model, str(ply_path))
+logger.info(f"PLY 保存先: {ply_path}")
+
+# レンダリング画像の保存
+renders_dir = output_dir / "renders"
+save_rendered_images(
+    model, test_images, test_tensors,
+    cameras, device, str(renders_dir), resolution_scale
+)
+logger.info(f"レンダリング画像保存先: {renders_dir}")

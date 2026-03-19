@@ -1,4 +1,5 @@
 import random
+from typing import Optional
 
 import torch
 from torch import nn, optim
@@ -103,7 +104,8 @@ class Options:
 
 def train_gs(
     model: nn.Module, optimizer: optim.Optimizer, images: dict,
-    image_tensors: dict, cameras: dict, cfg: dict, device: torch.device
+    image_tensors: dict, cameras: dict, cfg: dict, device: torch.device,
+    scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
 ) -> tuple[nn.Module, list]:
     """
     3DGS モデルの学習を行う関数
@@ -124,6 +126,8 @@ def train_gs(
         config の辞書データ
     device: torch.device
         デバイス
+    scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
+        学習率スケジューラー
 
     Returns
     ----------
@@ -223,6 +227,15 @@ def train_gs(
             # 不透明度のリセット
             if iteration > 0 and iteration % opacity_reset_interval == 0:
                 model.reset_opacities()
+
+            # Scheduler の更新
+            if scheduler is not None:
+                if isinstance(
+                    scheduler, optim.lr_scheduler.ReduceLROnPlateau
+                ):
+                    scheduler.step(loss.item())
+                else:
+                    scheduler.step()
 
             # 損失を記録
             iteration_loss = loss.item()
