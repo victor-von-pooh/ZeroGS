@@ -80,7 +80,7 @@ def ssim(
         レンダリング画像
     img2: torch.Tensor
         正解画像
-    window_size: int
+    window_size: int = 11
         ウィンドウサイズ
 
     Returns
@@ -137,7 +137,7 @@ def gs_loss(
         レンダリング画像
     gt: torch.Tensor
         正解画像
-    lambda_ssim: float
+    lambda_ssim: float = 0.2
         SSIM の重み
 
     Returns
