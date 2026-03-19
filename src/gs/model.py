@@ -355,28 +355,32 @@ class GaussianModel(nn.Module):
         keep_mask = ~prune_mask
 
         # 残す Gaussian と複製・分割された Gaussian を結合
-        new_means = torch.cat([
-            self.means.data[keep_mask], clone_means, split_means
-        ], dim=0)
-        new_colors = torch.cat([
-            self.colors.data[keep_mask], clone_colors, split_colors
-        ], dim=0)
-        new_opacities = torch.cat([
-            self.opacities.data[keep_mask], clone_opacities, split_opacities
-        ], dim=0)
-        new_scales = torch.cat([
-            self.scales.data[keep_mask], clone_scales, split_scales
-        ], dim=0)
-        new_rotations = torch.cat([
-            self.rotations.data[keep_mask], clone_rotations, split_rotations
-        ], dim=0)
+        new_means = torch.cat(
+            [self.means.data[keep_mask], clone_means, split_means], dim=0
+        )
+        new_colors = torch.cat(
+            [self.colors.data[keep_mask], clone_colors, split_colors], dim=0
+        )
+        new_opacities = torch.cat(
+            [
+                self.opacities.data[keep_mask],
+                clone_opacities, split_opacities
+            ], dim=0
+        )
+        new_scales = torch.cat(
+            [self.scales.data[keep_mask], clone_scales, split_scales], dim=0
+        )
+        new_rotations = torch.cat(
+            [
+                self.rotations.data[keep_mask],
+                clone_rotations, split_rotations
+            ], dim=0
+        )
 
         # Gaussian の最大数を超えた場合は不透明度の低い順に削除
         if new_means.shape[0] > max_gaussians:
             new_opacity_vals = torch.sigmoid(new_opacities[:, 0])
-            topk = torch.topk(
-                new_opacity_vals, max_gaussians
-            ).indices
+            topk = torch.topk(new_opacity_vals, max_gaussians).indices
             new_means = new_means[topk]
             new_colors = new_colors[topk]
             new_opacities = new_opacities[topk]

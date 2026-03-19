@@ -60,12 +60,11 @@ def psnr(rendered: torch.Tensor, gt: torch.Tensor) -> float:
     # MSE の計算
     mse = ((rendered - gt) ** 2).mean().item()
 
-    # MSE が 0 の場合は無限大
+    # PSNR の計算し, MSE が 0 の場合は無限大
     if mse == 0:
-        return float("inf")
-
-    # PSNR の計算
-    psnr_val = 10.0 * np.log10(1.0 / mse)
+        psnr_val = float("inf")
+    else:
+        psnr_val = 10.0 * np.log10(1.0 / mse)
 
     return psnr_val
 

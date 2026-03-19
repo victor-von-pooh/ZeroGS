@@ -40,10 +40,8 @@ def parse_cameras_txt(path: str) -> dict:
 
             # カメラデータを辞書に格納
             cameras[camera_id] = {
-                "model": model,
-                "width": width,
-                "height": height,
-                "params": params,
+                "model": model, "width": width,
+                "height": height, "params": params
             }
 
     return cameras
@@ -92,10 +90,8 @@ def parse_images_txt(path: str) -> dict:
 
             # 画像データを辞書に格納
             images[image_id] = {
-                "qvec": qvec,
-                "tvec": tvec,
-                "camera_id": camera_id,
-                "name": name,
+                "qvec": qvec, "tvec": tvec,
+                "camera_id": camera_id, "name": name
             }
 
     return images
@@ -139,9 +135,7 @@ def parse_points3D_txt(path: str) -> dict:
 
             # 3D 点群データを辞書に格納
             points3D[point_id] = {
-                "xyz": xyz,
-                "rgb": rgb,
-                "error": error,
+                "xyz": xyz, "rgb": rgb, "error": error
             }
 
     return points3D
@@ -206,14 +200,13 @@ def estimate_point_colors(
     # 各カメラの回転行列と並進ベクトルを事前計算
     cam_transforms = {}
     for image_id, image_data in images.items():
-        R = qvec_to_rotmat(image_data["qvec"])
+        r = qvec_to_rotmat(image_data["qvec"])
         t = image_data["tvec"]
         cam = cameras[image_data["camera_id"]]
         cam_transforms[image_id] = {
-            "R": R, "t": t, "f": cam["params"][0],
-            "cx": cam["params"][1], "cy": cam["params"][2],
-            "width": cam["width"], "height": cam["height"],
-            "img": loaded_images[image_id]
+            "r": r, "t": t, "f": cam["params"][0], "cx": cam["params"][1],
+            "cy": cam["params"][2], "width": cam["width"],
+            "height": cam["height"], "img": loaded_images[image_id]
         }
 
     # 各 3D 点を全カメラに再投影して色を推定
@@ -226,7 +219,7 @@ def estimate_point_colors(
         # 全カメラに対して再投影
         for cam_data in cam_transforms.values():
             # ワールド座標 → カメラ座標
-            p_cam = cam_data["R"] @ xyz + cam_data["t"]
+            p_cam = cam_data["r"] @ xyz + cam_data["t"]
 
             # カメラの前方にない場合はスキップ
             if p_cam[2] <= 0:
