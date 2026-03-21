@@ -9,7 +9,7 @@ from experiment_tools.set_up import start_experiment
 from src.gs.model import GaussianModel
 from src.utils.cfg_diff import get_config, get_diff
 from src.utils.preprocessing import (
-    parse_cameras_txt, parse_images_txt,
+    convert_bin_to_txt, parse_cameras_txt, parse_images_txt,
     parse_points3D_txt, estimate_point_colors,
     split_images, load_images
 )
@@ -63,6 +63,10 @@ sparse_dir = data_dir / "sparse" / "0"
 images_dir = data_dir / "images"
 
 # データの読み込み
+if not (sparse_dir / "cameras.txt").exists():
+    logger.info("bin形式のファイルをtxt形式に変換中...")
+    convert_bin_to_txt(str(sparse_dir))
+    logger.info("変換完了")
 cameras = parse_cameras_txt(str(sparse_dir / "cameras.txt"))
 images = parse_images_txt(str(sparse_dir / "images.txt"))
 points3D = parse_points3D_txt(str(sparse_dir / "points3D.txt"))

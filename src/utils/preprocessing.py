@@ -1,8 +1,87 @@
+from pathlib import Path
 import os
 
 import numpy as np
 from PIL import Image
 from torchvision import transforms
+
+
+def convert_bin_to_txt(sparse_dir: str) -> None:
+    """
+    COLMAP の bin 形式ファイルを txt 形式に変換する関数
+
+    Parameters
+    ----------
+    sparse_dir: str
+        cameras.bin, images.bin, points3D.bin が格納されたディレクトリのパス
+
+    Returns
+    ----------
+    None
+    """
+    # 変換前のファイルパスを Path オブジェクトに変換
+    sparse_path = Path(sparse_dir)
+
+    # カメラモデルの ID と名前, パラメータ数の対応表
+    camera_models = {
+        0: ("SIMPLE_PINHOLE", 3), 1: ("PINHOLE", 4), 2: ("SIMPLE_RADIAL", 4),
+        3: ("RADIAL", 5), 4: ("OPENCV", 8), 5: ("OPENCV_FISHEYE", 8),
+        6: ("FULL_OPENCV", 12), 7: ("FOV", 5),
+        8: ("SIMPLE_RADIAL_FISHEYE", 4), 9: ("RADIAL_FISHEYE", 5),
+        10: ("THIN_PRISM_FISHEYE", 12)
+    }
+
+    # cameras.bin → cameras.txt
+    with open(sparse_path / "cameras.bin", "rb") as f_in, \
+         open(sparse_path / "cameras.txt", "w") as f_out:
+        num_cameras = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+        for _ in range(num_cameras):
+            camera_id = int(np.frombuffer(f_in.read(4), dtype=np.uint32)[0])
+            model_id = int(np.frombuffer(f_in.read(4), dtype=np.int32)[0])
+            width = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+            height = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+            model_name, num_params = camera_models[model_id]
+            params = np.frombuffer(f_in.read(8 * num_params), dtype=np.float64)
+            params_str = " ".join(map(str, params))
+            f_out.write(f"{camera_id} {model_name} {width} {height} {params_str}\n")
+
+    # images.bin → images.txt
+    with open(sparse_path / "images.bin", "rb") as f_in, \
+         open(sparse_path / "images.txt", "w") as f_out:
+        num_images = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+        for _ in range(num_images):
+            image_id = int(np.frombuffer(f_in.read(4), dtype=np.uint32)[0])
+            qvec = np.frombuffer(f_in.read(32), dtype=np.float64)
+            tvec = np.frombuffer(f_in.read(24), dtype=np.float64)
+            camera_id = int(np.frombuffer(f_in.read(4), dtype=np.uint32)[0])
+            name = b""
+            while True:
+                c = f_in.read(1)
+                if c == b"\x00":
+                    break
+                name += c
+            name = name.decode("utf-8")
+            num_points2D = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+            f_in.read(num_points2D * 24)
+            qvec_str = " ".join(map(str, qvec))
+            tvec_str = " ".join(map(str, tvec))
+            f_out.write(f"{image_id} {qvec_str} {tvec_str} {camera_id} {name}\n")
+            f_out.write("\n")
+
+    # points3D.bin → points3D.txt
+    with open(sparse_path / "points3D.bin", "rb") as f_in, \
+         open(sparse_path / "points3D.txt", "w") as f_out:
+        num_points = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+        for _ in range(num_points):
+            point3D_id = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+            xyz = np.frombuffer(f_in.read(24), dtype=np.float64)
+            rgb = np.frombuffer(f_in.read(3), dtype=np.uint8)
+            error = float(np.frombuffer(f_in.read(8), dtype=np.float64)[0])
+            num_track = int(np.frombuffer(f_in.read(8), dtype=np.uint64)[0])
+            f_in.read(num_track * 8)
+            xyz_str = " ".join(map(str, xyz))
+            rgb_str = " ".join(map(str, rgb))
+            f_out.write(f"{point3D_id} {xyz_str} {rgb_str} {error}\n")
 
 
 def parse_cameras_txt(path: str) -> dict:
