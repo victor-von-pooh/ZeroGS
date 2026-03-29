@@ -41,60 +41,71 @@ class GaussianRasterizer(torch.autograd.Function):
         device = means2d.device
         n = means2d.shape[0]
 
-        # ピクセル座標のグリッドを作成
+        # ラスタライザは Python for-loop のため CPU で実行（MPS/CUDA はカーネル起動オーバーヘッドが大きい）
+        means2d_c = means2d.cpu()
+        inv_cov2d_c = inv_cov2d.cpu()
+        colors_c = colors.cpu()
+        opacities_c = opacities.cpu()
+        sigma_max_c = sigma_max.cpu()
+
+        # forward では勾配を計算しないためm torch.no_grad() コンテキストで実装
         with torch.no_grad():
-            # indexing="ij" を指定して行列形式のグリッドを作成
+            # バウンディングボックスを numpy で一括計算
+            mu_np = means2d_c.numpy()
+            rad_np = sigma_max_c.numpy()
+            y0s = np.clip((mu_np[:, 1] - rad_np).astype(int), 0, height)
+            y1s = np.clip((mu_np[:, 1] + rad_np).astype(int) + 1, 0, height)
+            x0s = np.clip((mu_np[:, 0] - rad_np).astype(int), 0, width)
+            x1s = np.clip((mu_np[:, 0] + rad_np).astype(int) + 1, 0, width)
+
+            # ピクセル座標グリッド（CPU）
             py, px = torch.meshgrid(
-                torch.arange(height, dtype=torch.float32, device=device),
-                torch.arange(width, dtype=torch.float32, device=device),
+                torch.arange(height, dtype=torch.float32),
+                torch.arange(width, dtype=torch.float32),
                 indexing="ij"
             )
-            rendered = torch.zeros(3, height, width, device=device)
-            running_T = torch.ones(height, width, device=device)
+            rendered = torch.zeros(3, height, width)
+            running_T = torch.ones(height, width)
 
-            # Gaussian ごとに寄与を加算
+            # Gaussian ごとにバウンディングボックス内のピクセルを処理
             for i in range(n):
-                # Gaussian の中心とバウンディングボックスの半径を取得
-                mu_x = means2d[i, 0].item()
-                mu_y = means2d[i, 1].item()
-                rad = sigma_max[i].item()
-
-                # バウンディングボックスの範囲を整数に変換して画像範囲内にクリップ
-                y0 = max(0, int(mu_y - rad))
-                y1 = min(height, int(mu_y + rad) + 1)
-                x0 = max(0, int(mu_x - rad))
-                x1 = min(width, int(mu_x + rad) + 1)
+                # バウンディングボックスの座標を整数に変換
+                y0, y1 = int(y0s[i]), int(y1s[i])
+                x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
                     continue
 
-                # バウンディングボックス内のピクセル座標を中心からのオフセットに変換
-                dx = px[y0:y1, x0:x1] - mu_x
-                dy = py[y0:y1, x0:x1] - mu_y
-                ic = inv_cov2d[i]
+                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
+                dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
+                dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
+                ic = inv_cov2d_c[i]
                 maha = (
                     ic[0, 0] * dx * dx
                     + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 alpha = (
-                    opacities[i] * torch.exp(-0.5 * maha)
+                    opacities_c[i] * torch.exp(-0.5 * maha)
                 ).clamp(max=0.99)
                 T_p = running_T[y0:y1, x0:x1]
 
-                # レンダリングに寄与を加算
+                # レンダリング結果を更新
                 rendered[:, y0:y1, x0:x1] += (
-                    (T_p * alpha).unsqueeze(0) * colors[i].reshape(3, 1, 1)
+                    (T_p * alpha).unsqueeze(0) * colors_c[i].reshape(3, 1, 1)
                 )
                 running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
 
-        # バックワードで使用するためのテンソルを保存
+        # px, py を backward で再利用するため保存（CPU テンソル）
         ctx.save_for_backward(
-            means2d, inv_cov2d, colors, opacities, sigma_max
+            means2d_c, inv_cov2d_c, colors_c, opacities_c, sigma_max_c, px, py
         )
+        ctx.bboxes = (y0s, y1s, x0s, x1s)
         ctx.height = height
         ctx.width = width
+        ctx.orig_device = device
 
-        return rendered
+        # レンダリング結果を元のデバイスに戻す
+        return rendered.to(device)
 
     @staticmethod
     def backward(
@@ -125,48 +136,41 @@ class GaussianRasterizer(torch.autograd.Function):
         d_width: int
             画像の幅の勾配
         """
-        # 保存されたテンソルと情報を取得
-        means2d, inv_cov2d, colors, opacities, sigma_max = ctx.saved_tensors
+        # 保存されたテンソルと情報を取得（すべて CPU テンソル）
+        means2d, inv_cov2d, colors, opacities, _, px, py = ctx.saved_tensors
+        y0s, y1s, x0s, x1s = ctx.bboxes
+        mu_np = means2d.numpy()
         height = ctx.height
         width = ctx.width
-        device = means2d.device
+        orig_device = ctx.orig_device
         n = means2d.shape[0]
 
-        # 勾配の初期化
-        d_means2d = torch.zeros(n, 2, device=device)
-        d_inv_cov2d = torch.zeros(n, 2, 2, device=device)
-        d_colors = torch.zeros(n, 3, device=device)
-        d_opacities = torch.zeros(n, device=device)
-        d_sigma_max = torch.zeros(n, device=device)
+        # 勾配の初期化（CPU）
+        d_means2d = torch.zeros(n, 2)
+        d_inv_cov2d = torch.zeros(n, 2, 2)
+        d_colors = torch.zeros(n, 3)
+        d_opacities = torch.zeros(n)
+        d_sigma_max = torch.zeros(n)
 
-        # ピクセル座標のグリッドを作成
+        # d_rendered を CPU に移動
+        d_rendered_cpu = d_rendered.cpu()
+
+        # backward では forward と同じ順序でバウンディングボックスを再現しながら勾配を計算
         with torch.no_grad():
-            # indexing="ij" を指定して行列形式のグリッドを作成
-            py, px = torch.meshgrid(
-                torch.arange(height, dtype=torch.float32, device=device),
-                torch.arange(width, dtype=torch.float32, device=device),
-                indexing="ij"
-            )
-            running_T = torch.ones(height, width, device=device)
+            # forward と同じ順序で running_T を再現しながら勾配を計算
+            running_T = torch.ones(height, width)
 
-            # Gaussian ごとに寄与を加算
+            # Gaussian ごとにバウンディングボックス内のピクセルを処理
             for i in range(n):
-                # Gaussian の中心とバウンディングボックスの半径を取得
-                mu_x = means2d[i, 0].item()
-                mu_y = means2d[i, 1].item()
-                rad = sigma_max[i].item()
-
-                # バウンディングボックスの範囲を整数に変換して画像範囲内にクリップ
-                y0 = max(0, int(mu_y - rad))
-                y1 = min(height, int(mu_y + rad) + 1)
-                x0 = max(0, int(mu_x - rad))
-                x1 = min(width, int(mu_x + rad) + 1)
+                # バウンディングボックスの座標を整数に変換
+                y0, y1 = int(y0s[i]), int(y1s[i])
+                x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
                     continue
 
-                # バウンディングボックス内のピクセル座標を中心からのオフセットに変換
-                dx = px[y0:y1, x0:x1] - mu_x
-                dy = py[y0:y1, x0:x1] - mu_y
+                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
+                dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
+                dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
                 maha = (
                     ic[0, 0] * dx * dx
@@ -181,7 +185,7 @@ class GaussianRasterizer(torch.autograd.Function):
                 T_p = running_T[y0:y1, x0:x1]
 
                 # バックワードで使用するためのパッチを取得
-                d_patch = d_rendered[:, y0:y1, x0:x1]
+                d_patch = d_rendered_cpu[:, y0:y1, x0:x1]
 
                 # 勾配を計算
                 d_colors[i] = (
@@ -211,9 +215,11 @@ class GaussianRasterizer(torch.autograd.Function):
                 # running_T を更新
                 running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
 
+        # 勾配を元のデバイスに戻す
         return (
-            d_means2d, d_inv_cov2d, d_colors, d_opacities, d_sigma_max,
-            None, None
+            d_means2d.to(orig_device), d_inv_cov2d.to(orig_device),
+            d_colors.to(orig_device), d_opacities.to(orig_device),
+            d_sigma_max.to(orig_device), None, None
         )
 
 

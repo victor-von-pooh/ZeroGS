@@ -6,14 +6,23 @@
     },
     "seed": 42,
     "data": {
-        "data_dir": "data"
+        "data_dir": "data",
+        "resolution_scale": 2,
+        "max_initial_gaussians": 20000
     },
     "training": {
-        "iterations": 1000,
-        "learning_rate": 0.001,
+        "iterations": 7000,
+        "learning_rate": 1.6e-4,
+        "learning_rates": {
+            "means":     1.6e-4,
+            "sh_coeffs": 2.5e-3,
+            "opacities": 5e-2,
+            "scales":    5e-3,
+            "rotations": 1e-3
+        },
         "optimizer": "adam",
         "adam_betas": [0.9, 0.999],
-        "adam_eps": 1e-8,
+        "adam_eps": 1e-15,
         "adam_weight_decay": 0,
         "lambda_ssim": 0.2,
         "scheduler": {

@@ -27,9 +27,22 @@ class Options:
         )
 
         # Adam
+        lr_default = cfg["training"]["learning_rate"]
+        lr_cfg = cfg["training"].get("learning_rates", {})
+        adam_param_groups = [
+            {"params": [model.means],
+             "lr": lr_cfg.get("means", lr_default)},
+            {"params": [model.sh_coeffs],
+             "lr": lr_cfg.get("sh_coeffs", lr_default)},
+            {"params": [model.opacities],
+             "lr": lr_cfg.get("opacities", lr_default)},
+            {"params": [model.scales],
+             "lr": lr_cfg.get("scales", lr_default)},
+            {"params": [model.rotations],
+             "lr": lr_cfg.get("rotations", lr_default)},
+        ]
         self.adam = optim.Adam(
-            params=model.parameters(),
-            lr=cfg["training"]["learning_rate"],
+            params=adam_param_groups,
             betas=tuple(cfg["training"].get("adam_betas", [0.9, 0.999])),
             eps=cfg["training"].get("adam_eps", 1e-8),
             weight_decay=cfg["training"].get("adam_weight_decay", 0),
@@ -219,9 +232,30 @@ def train_gs(
                     )
 
                     # Optimizer の再構築
+                    param_keys = [
+                        "means", "sh_coeffs", "opacities",
+                        "scales", "rotations"
+                    ]
+                    param_tensors = [
+                        model.means, model.sh_coeffs,
+                        model.opacities, model.scales, model.rotations,
+                    ]
+                    n_groups = len(optimizer.param_groups)
+                    new_groups = [
+                        {
+                            "params": [p],
+                            "lr": optimizer.param_groups[i]["lr"]
+                            if i < n_groups
+                            else optimizer.param_groups[0]["lr"],
+                        }
+                        for i, p in enumerate(param_tensors)
+                    ]
+                    defaults = optimizer.defaults
                     optimizer = optim.Adam(
-                        params=model.parameters(),
-                        lr=optimizer.param_groups[0]["lr"]
+                        new_groups,
+                        betas=defaults["betas"],
+                        eps=defaults["eps"],
+                        weight_decay=defaults.get("weight_decay", 0),
                     )
 
             # 不透明度のリセット

@@ -71,6 +71,14 @@ cameras = parse_cameras_txt(str(sparse_dir / "cameras.txt"))
 images = parse_images_txt(str(sparse_dir / "images.txt"))
 points3D = parse_points3D_txt(str(sparse_dir / "points3D.txt"))
 
+# 初期 Gaussian 数の上限
+max_initial = cfg["data"].get("max_initial_gaussians", None)
+if max_initial and len(points3D) > max_initial:
+    import random as _random
+    sampled = _random.sample(list(points3D.keys()), max_initial)
+    points3D = {k: points3D[k] for k in sampled}
+    logger.info(f"初期点群を {max_initial} 点にダウンサンプリング")
+
 # 最適化用画像と評価用画像の分離
 test_interval = cfg["data"].get("test_interval", 8)
 train_images, test_images = split_images(images, test_interval)
