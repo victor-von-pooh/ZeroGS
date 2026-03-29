@@ -17,6 +17,7 @@ ZeroGS は、その **GNN_Colmap の出力がどれくらい良いのかを定�
 - gsplat, nerfstudio 等の 3DGS 専用ライブラリは使用しない
 - ラスタライザも PyTorch で自前実装し、アーキテクチャレベルでカスタマイズ可能にする
 - ラスタライザは `torch.autograd.Function` によるカスタム backward で実装し、Gaussian ごとのバウンディングボックス内だけを再計算することでメモリ使用量を O(N × パッチサイズ²) に抑える
+- ラスタライザは Python for-loop ベースのため、MPS / CUDA 環境でもカーネル起動オーバーヘッドを避けるために CPU で実行する。デバイス `"auto"` では CUDA → CPU の順で選択する
 
 ## ディレクトリ構成
 
@@ -63,9 +64,10 @@ GNN_Colmap の出力を入力として、3DGS で最適化・レンダリング�
 
 ## configs — ハイパーパラメータ管理
 
-- `configs/default/` にデフォルトのハイパーパラメータを JSON で保持する
+- `configs/default/` にデフォルトのハイパーパラメータを JSON で保持する（7000 イテレーションの本番設定）
 - 実験時は `default/` から `experiment/` へ config ファイルをコピーし、パラメータを変更して使用する
 - `default/` は Git 追跡対象、`experiment/` は追跡対象外
+- 動作確認・速度確認目的の短期実験では、300 イテレーション用の ADC パラメータ調整を行う（詳細は [configs/experiment/README.md](configs/experiment/README.md) を参照）
 
 詳細は [configs/README.md](configs/README.md) を参照。
 
