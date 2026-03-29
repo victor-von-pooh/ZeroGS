@@ -16,6 +16,7 @@ ZeroGS は、その **GNN_Colmap の出力がどれくらい良いのかを定�
 - 依存ライブラリは **PyTorch + 標準的な科学計算ライブラリ**（numpy, scipy, PIL 等）のみ
 - gsplat, nerfstudio 等の 3DGS 専用ライブラリは使用しない
 - ラスタライザも PyTorch で自前実装し、アーキテクチャレベルでカスタマイズ可能にする
+- ラスタライザは `torch.autograd.Function` によるカスタム backward で実装し、Gaussian ごとのバウンディングボックス内だけを再計算することでメモリ使用量を O(N × パッチサイズ²) に抑える
 
 ## ディレクトリ構成
 
@@ -31,10 +32,10 @@ ZeroGS/
 │   └── start_logging.py    #   ロガー初期化
 ├── data/                   # 学習データ（GNN_Colmap の出力、Git 追跡対象外）
 │   ├── images/             #   入力画像群
-│   └── sparse/0/           #   COLMAP 互換フォーマット
-│       ├── cameras.txt
-│       ├── images.txt
-│       └── points3D.txt
+│   └── sparse/0/           #   COLMAP 互換フォーマット（txt / bin 両対応）
+│       ├── cameras.txt (or cameras.bin)
+│       ├── images.txt  (or images.bin)
+│       └── points3D.txt (or points3D.bin)
 ├── outputs/                # 学習結果の出力先（Git 追跡対象外）
 │   └── gs/<date>/<time>/   #   モデル・PLY・レンダリング画像など
 ├── src/                    # ソースコード
@@ -81,7 +82,7 @@ GNN_Colmap の出力を入力として、3DGS で最適化・レンダリング�
 
 ## data — 学習データ
 
-GNN_Colmap の出力（COLMAP 互換フォーマット）と入力画像群を `data/` に配置する。
+GNN_Colmap の出力（COLMAP 互換フォーマット）と入力画像群を `data/` に配置する。txt 形式・bin 形式のどちらでも動作し、bin 形式の場合は学習開始時に自動的に txt へ変換される。
 
 詳細は [data/README.md](data/README.md) を参照。
 
@@ -117,7 +118,7 @@ pip3 install -r requirements.txt
 
 ### 2. 学習データの準備
 
-GNN_Colmap の学習・推論を実行し、出力された `sparse/0/` と入力画像 `images/` を `data/` に配置する。
+GNN_Colmap の学習・推論を実行し、出力された `sparse/0/` と入力画像 `images/` を `data/` に配置する。txt 形式・bin 形式のどちらでも動作する。
 
 ```
 data/
@@ -126,9 +127,9 @@ data/
 │   ├── frame_0002.jpg
 │   └── ...
 └── sparse/0/
-    ├── cameras.txt
-    ├── images.txt
-    └── points3D.txt
+    ├── cameras.txt  # または cameras.bin（起動時に自動変換）
+    ├── images.txt   # または images.bin
+    └── points3D.txt # または points3D.bin
 ```
 
 ### 3. 実験用 config の作成
