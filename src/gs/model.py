@@ -4,6 +4,219 @@ import torch
 import torch.nn as nn
 
 
+class GaussianRasterizer(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx: torch.autograd.Function, means2d: torch.Tensor,
+        inv_cov2d: torch.Tensor, colors: torch.Tensor,
+        opacities: torch.Tensor, sigma_max: torch.Tensor,
+        height: int, width: int
+    ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        ctx: torch.autograd.Function
+            自動微分のコンテキスト
+        means2d: torch.Tensor
+            2D 平均位置
+        inv_cov2d: torch.Tensor
+            2D 共分散の逆行列
+        colors: torch.Tensor
+            各 Gaussian の色
+        opacities: torch.Tensor
+            シグモイド済み不透明度
+        sigma_max: torch.Tensor
+            バウンディングボックス半径
+        height: int
+            画像の高さ
+        width: int
+            画像の幅
+
+        Returns
+        ----------
+        rendered: torch.Tensor
+            レンダリングされた画像
+        """
+        # デバイスと Gaussian の数
+        device = means2d.device
+        n = means2d.shape[0]
+
+        # ピクセル座標のグリッドを作成
+        with torch.no_grad():
+            # indexing="ij" を指定して行列形式のグリッドを作成
+            py, px = torch.meshgrid(
+                torch.arange(height, dtype=torch.float32, device=device),
+                torch.arange(width, dtype=torch.float32, device=device),
+                indexing="ij"
+            )
+            rendered = torch.zeros(3, height, width, device=device)
+            running_T = torch.ones(height, width, device=device)
+
+            # Gaussian ごとに寄与を加算
+            for i in range(n):
+                # Gaussian の中心とバウンディングボックスの半径を取得
+                mu_x = means2d[i, 0].item()
+                mu_y = means2d[i, 1].item()
+                rad = sigma_max[i].item()
+
+                # バウンディングボックスの範囲を整数に変換して画像範囲内にクリップ
+                y0 = max(0, int(mu_y - rad))
+                y1 = min(height, int(mu_y + rad) + 1)
+                x0 = max(0, int(mu_x - rad))
+                x1 = min(width, int(mu_x + rad) + 1)
+                if y0 >= y1 or x0 >= x1:
+                    continue
+
+                # バウンディングボックス内のピクセル座標を中心からのオフセットに変換
+                dx = px[y0:y1, x0:x1] - mu_x
+                dy = py[y0:y1, x0:x1] - mu_y
+                ic = inv_cov2d[i]
+                maha = (
+                    ic[0, 0] * dx * dx
+                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    + ic[1, 1] * dy * dy
+                )
+                alpha = (
+                    opacities[i] * torch.exp(-0.5 * maha)
+                ).clamp(max=0.99)
+                T_p = running_T[y0:y1, x0:x1]
+
+                # レンダリングに寄与を加算
+                rendered[:, y0:y1, x0:x1] += (
+                    (T_p * alpha).unsqueeze(0) * colors[i].reshape(3, 1, 1)
+                )
+                running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
+
+        # バックワードで使用するためのテンソルを保存
+        ctx.save_for_backward(
+            means2d, inv_cov2d, colors, opacities, sigma_max
+        )
+        ctx.height = height
+        ctx.width = width
+
+        return rendered
+
+    @staticmethod
+    def backward(
+        ctx: torch.autograd.Function, d_rendered: torch.Tensor
+    ) -> tuple:
+        """
+        Parameters
+        ----------
+        ctx: torch.autograd.Function
+            自動微分のコンテキスト
+        d_rendered: torch.Tensor
+            レンダリングされた画像の勾配
+
+        Returns
+        ----------
+        d_means2d: torch.Tensor
+            2D 平均位置の勾配
+        d_inv_cov2d: torch.Tensor
+            2D 共分散の逆行列の勾配
+        d_colors: torch.Tensor
+            色の勾配
+        d_opacities: torch.Tensor
+            不透明度の勾配
+        d_sigma_max: torch.Tensor
+            バウンディングボックス半径の勾配
+        d_height: int
+            画像の高さの勾配
+        d_width: int
+            画像の幅の勾配
+        """
+        # 保存されたテンソルと情報を取得
+        means2d, inv_cov2d, colors, opacities, sigma_max = ctx.saved_tensors
+        height = ctx.height
+        width = ctx.width
+        device = means2d.device
+        n = means2d.shape[0]
+
+        # 勾配の初期化
+        d_means2d = torch.zeros(n, 2, device=device)
+        d_inv_cov2d = torch.zeros(n, 2, 2, device=device)
+        d_colors = torch.zeros(n, 3, device=device)
+        d_opacities = torch.zeros(n, device=device)
+        d_sigma_max = torch.zeros(n, device=device)
+
+        # ピクセル座標のグリッドを作成
+        with torch.no_grad():
+            # indexing="ij" を指定して行列形式のグリッドを作成
+            py, px = torch.meshgrid(
+                torch.arange(height, dtype=torch.float32, device=device),
+                torch.arange(width, dtype=torch.float32, device=device),
+                indexing="ij"
+            )
+            running_T = torch.ones(height, width, device=device)
+
+            # Gaussian ごとに寄与を加算
+            for i in range(n):
+                # Gaussian の中心とバウンディングボックスの半径を取得
+                mu_x = means2d[i, 0].item()
+                mu_y = means2d[i, 1].item()
+                rad = sigma_max[i].item()
+
+                # バウンディングボックスの範囲を整数に変換して画像範囲内にクリップ
+                y0 = max(0, int(mu_y - rad))
+                y1 = min(height, int(mu_y + rad) + 1)
+                x0 = max(0, int(mu_x - rad))
+                x1 = min(width, int(mu_x + rad) + 1)
+                if y0 >= y1 or x0 >= x1:
+                    continue
+
+                # バウンディングボックス内のピクセル座標を中心からのオフセットに変換
+                dx = px[y0:y1, x0:x1] - mu_x
+                dy = py[y0:y1, x0:x1] - mu_y
+                ic = inv_cov2d[i]
+                maha = (
+                    ic[0, 0] * dx * dx
+                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    + ic[1, 1] * dy * dy
+                )
+                exp_term = torch.exp(-0.5 * maha)
+                sigma_i = opacities[i]
+                unclamped = sigma_i * exp_term
+                clamp_mask = (unclamped < 0.99).float()
+                alpha = unclamped.clamp(max=0.99)
+                T_p = running_T[y0:y1, x0:x1]
+
+                # バックワードで使用するためのパッチを取得
+                d_patch = d_rendered[:, y0:y1, x0:x1]
+
+                # 勾配を計算
+                d_colors[i] = (
+                    d_patch * (T_p * alpha).unsqueeze(0)
+                ).sum(dim=(-1, -2))
+                d_alpha = T_p * (
+                    d_patch * colors[i].reshape(3, 1, 1)
+                ).sum(dim=0)
+                d_unc = d_alpha * clamp_mask
+                d_opacities[i] = (d_unc * exp_term).sum()
+                d_maha = d_unc * (-0.5 * sigma_i * exp_term)
+                d_inv_cov2d[i, 0, 0] = (d_maha * dx * dx).sum()
+                d_inv_cov2d[i, 0, 1] = (d_maha * dx * dy).sum()
+                d_inv_cov2d[i, 1, 0] = (d_maha * dx * dy).sum()
+                d_inv_cov2d[i, 1, 1] = (d_maha * dy * dy).sum()
+                d_means2d[i, 0] = (
+                    d_maha * (
+                        -2.0 * dx * ic[0, 0] - dy * (ic[0, 1] + ic[1, 0])
+                    )
+                ).sum()
+                d_means2d[i, 1] = (
+                    d_maha * (
+                        -2.0 * dy * ic[1, 1] - dx * (ic[0, 1] + ic[1, 0])
+                    )
+                ).sum()
+
+                # running_T を更新
+                running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
+
+        return (
+            d_means2d, d_inv_cov2d, d_colors, d_opacities, d_sigma_max,
+            None, None
+        )
+
+
 class GaussianModel(nn.Module):
     def __init__(self, points3D: dict, sh_degree: int = 3):
         # 親クラスのコンストラクタを呼び出す
@@ -28,7 +241,7 @@ class GaussianModel(nn.Module):
         # 位置
         self.means = nn.Parameter(torch.from_numpy(xyz))
 
-        # SH 係数 (N, K, 3): DC 項を初期色から初期化, 高次項は 0
+        # DC 項を初期色から初期化, 高次項は 0
         c0 = 0.28209479177387814
         sh_coeffs = torch.zeros(n, self.num_sh_coeffs, 3, dtype=torch.float32)
         sh_coeffs[:, 0] = torch.from_numpy(rgb / 255.0) / c0
@@ -124,7 +337,9 @@ class GaussianModel(nn.Module):
         # 視線方向の計算
         valid_means = self.means[valid_mask]
         view_dirs = cam_pos.unsqueeze(0) - valid_means
-        view_dirs = view_dirs / view_dirs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        view_dirs = view_dirs / view_dirs.norm(
+            dim=-1, keepdim=True
+        ).clamp(min=1e-8)
 
         # SH 評価で色を取得
         colors = evaluate_sh(sh_coeffs, view_dirs)
@@ -171,74 +386,28 @@ class GaussianModel(nn.Module):
         opacities = opacities[sort_indices]
 
         # 画像範囲内の Gaussian のみ残す
-        margin = 3.0 * torch.sqrt(torch.max(cov2d[:, 0, 0], cov2d[:, 1, 1]))
+        sigma_max = 3.0 * torch.sqrt(
+            torch.max(cov2d[:, 0, 0], cov2d[:, 1, 1])
+        )
         visible = (
-            (means2d[:, 0] + margin > 0)
-            & (means2d[:, 0] - margin < width)
-            & (means2d[:, 1] + margin > 0)
-            & (means2d[:, 1] - margin < height)
+            (means2d[:, 0] + sigma_max > 0)
+            & (means2d[:, 0] - sigma_max < width)
+            & (means2d[:, 1] + sigma_max > 0)
+            & (means2d[:, 1] - sigma_max < height)
         )
         means2d = means2d[visible]
         inv_cov2d = inv_cov2d[visible]
         colors = colors[visible]
-        opacities = opacities[visible]
+        # opacities: (N, 1) → (N,) に変換して渡す
+        opacities = opacities[visible, 0]
+        sigma_max_vis = sigma_max[visible].detach()
 
-        # ピクセルグリッドの作成
-        py, px = torch.meshgrid(
-            torch.arange(height, device=device, dtype=torch.float32),
-            torch.arange(width, device=device, dtype=torch.float32),
-            indexing="ij"
+        # カスタムラスタライザでレンダリング
+        rendered = GaussianRasterizer.apply(
+            means2d, inv_cov2d, colors, opacities,
+            sigma_max_vis, height, width
         )
-
-        # チャンク方式でレンダリング
-        n_gaussians = means2d.shape[0]
-        chunk_size = 256
-        rendered = torch.zeros(3, height, width, device=device)
-        running_T = torch.ones(height, width, device=device)
-
-        # チャンクごとに処理
-        for start in range(0, n_gaussians, chunk_size):
-            # チャンクの終了インデックス
-            end = min(start + chunk_size, n_gaussians)
-
-            # チャンク内の差分計算
-            dx = px.unsqueeze(0) - means2d[start:end, 0].reshape(-1, 1, 1)
-            dy = py.unsqueeze(0) - means2d[start:end, 1].reshape(-1, 1, 1)
-
-            # マハラノビス距離
-            ic = inv_cov2d[start:end]
-            maha = (
-                ic[:, 0, 0].reshape(-1, 1, 1) * dx * dx
-                + (ic[:, 0, 1] + ic[:, 1, 0]).reshape(-1, 1, 1) * dx * dy
-                + ic[:, 1, 1].reshape(-1, 1, 1) * dy * dy
-            )
-
-            # アルファ
-            alpha_chunk = (
-                opacities[start:end, 0].reshape(-1, 1, 1)
-                * torch.exp(-0.5 * maha)
-            ).clamp(max=0.99)
-
-            # チャンク内の透過率
-            one_minus_alpha = 1.0 - alpha_chunk
-            chunk_T = torch.cat(
-                [
-                    torch.ones(1, height, width, device=device),
-                    torch.cumprod(one_minus_alpha[:-1], dim=0)
-                ], dim=0
-            )
-
-            # running_T を掛けて実際の透過率にする
-            actual_T = running_T.unsqueeze(0) * chunk_T
-
-            # 色の蓄積
-            weight = actual_T * alpha_chunk
-            rendered = rendered + (
-                weight.unsqueeze(1) * colors[start:end].reshape(-1, 3, 1, 1)
-            ).sum(dim=0)
-
-            # running_T の更新
-            running_T = running_T * one_minus_alpha.prod(dim=0)
+        assert isinstance(rendered, torch.Tensor)
 
         return rendered
 
