@@ -2,6 +2,7 @@ import numpy as np
 from scipy.spatial import KDTree
 import torch
 import torch.nn as nn
+from src.gs.rasterizer import is_cuda_available
 
 
 class GaussianRasterizer(torch.autograd.Function):
@@ -390,6 +391,7 @@ class GaussianModel(nn.Module):
         cov2d = cov2d[sort_indices]
         colors = colors[sort_indices]
         opacities = opacities[sort_indices]
+        depths_sorted = means_cam[sort_indices, 2]
 
         # 画像範囲内の Gaussian のみ残す
         sigma_max = 3.0 * torch.sqrt(
@@ -407,12 +409,20 @@ class GaussianModel(nn.Module):
         # opacities: (N, 1) → (N,) に変換して渡す
         opacities = opacities[visible, 0]
         sigma_max_vis = sigma_max[visible].detach()
+        depths_vis = depths_sorted[visible].detach()
 
-        # カスタムラスタライザでレンダリング
-        rendered = GaussianRasterizer.apply(
-            means2d, inv_cov2d, colors, opacities,
-            sigma_max_vis, height, width
-        )
+        # ラスタライザ: CUDA が使える場合はタイルベース CUDA、そうでなければ Python
+        if is_cuda_available():
+            from src.gs.rasterizer.rasterizer import CUDARasterizer
+            rendered = CUDARasterizer.apply(
+                means2d, inv_cov2d, colors, opacities,
+                depths_vis, sigma_max_vis, height, width
+            )
+        else:
+            rendered = GaussianRasterizer.apply(
+                means2d, inv_cov2d, colors, opacities,
+                sigma_max_vis, height, width
+            )
         assert isinstance(rendered, torch.Tensor)
 
         return rendered

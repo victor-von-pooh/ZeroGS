@@ -11,6 +11,71 @@
 | `model.py` | `GaussianRasterizer`（カスタム autograd）と `GaussianModel` クラスの定義 |
 | `train.py` | 学習のエントリポイント。データ読み込みから学習・評価・エクスポートまでを実行する |
 
+## rasterizer/
+
+CUDA タイルベースラスタライザの実装。CUDA 環境（Google Colab 等）では Python ループの代わりに GPU カーネルでレンダリングを行い、大幅な高速化を実現する。CUDA が利用できない環境では `model.py` の `GaussianRasterizer`（Python 実装）に自動フォールバックする。
+
+### 背景
+
+Python for-loop によるラスタライザは、Gaussian 1 つずつを逐次処理するため GPU の並列性を活かせない。alpha compositing の逐次依存（T_i = Π_{j<i}(1 - α_j)）があるため、PyTorch の標準演算では高速化が困難である。一方、**ピクセル間は独立**であることを利用すると、各ピクセルを 1 GPU スレッドに割り当てて並列処理できる。これが CUDA カーネルの基本方針である。
+
+### アーキテクチャ
+
+```
+GaussianModel.forward()
+    │
+    ├─ 投影・SH 評価・深度ソート（PyTorch、デバイス上）
+    │
+    └─ ラスタライザ
+         ├─ CUDA 環境: CUDARasterizer（rasterizer/rasterizer.py）
+         │    ├─ tile_preprocess(): Gaussian→タイル割り当て + 深度ソート
+         │    ├─ forward.cu: タイルベース forward カーネル
+         │    └─ backward.cu: 逆順再生 backward カーネル
+         │
+         └─ CPU 環境: GaussianRasterizer（model.py）
+              └─ Python for-loop + numpy bbox
+```
+
+### タイルベースラスタライザの仕組み
+
+画像を 16×16 ピクセルのタイルに分割し、各タイルに重なる Gaussian のリストを事前に構築する。
+
+1. **前処理**（`tile_preprocess.py`、PyTorch）
+   - 各 Gaussian のバウンディングボックス（3σ）からタイル座標を計算
+   - (tile_id, depth, gaussian_id) のペアを生成し、tile_id × depth でソート
+   - `tile_ranges` テンソルで各タイルの Gaussian リスト範囲を記録
+
+2. **Forward カーネル**（`forward.cu`）
+   - 1 CUDA ブロック = 1 タイル（256 スレッド = 16×16 ピクセル）
+   - 各スレッドが担当ピクセルの alpha compositing を実行
+   - shared memory に Gaussian データをバッチロードしてグローバルメモリアクセスを削減
+   - `T < 1e-4` で早期終了（完全に不透明になったピクセルはスキップ）
+   - `final_T`（最終透過率）と `n_contrib`（寄与 Gaussian 数）を保存
+
+3. **Backward カーネル**（`backward.cu`）
+   - Forward と同じタイル構造を**逆順**に走査
+   - `final_T` から `T_i = T / (1 - α_i)` で各ステップの透過率を復元
+   - `atomicAdd` でグローバルメモリ上の勾配テンソルに蓄積
+   - 解析的勾配: `d_colors`, `d_opacities`, `d_inv_cov2d`, `d_means2d`
+
+### ファイル一覧
+
+| ファイル | 概要 |
+|---|---|
+| `rasterizer/__init__.py` | CUDA 拡張の JIT コンパイルと `is_cuda_available()` |
+| `rasterizer/rasterizer.py` | `CUDARasterizer(torch.autograd.Function)` ラッパー |
+| `rasterizer/tile_preprocess.py` | Gaussian→タイル割り当て + ソート（PyTorch） |
+| `rasterizer/cuda/forward.cu` | CUDA forward カーネル |
+| `rasterizer/cuda/backward.cu` | CUDA backward カーネル |
+| `rasterizer/cuda/bindings.cpp` | pybind11 バインディング |
+
+### 期待される性能
+
+| 環境 | ラスタライザ | 速度（目安） |
+|---|---|---|
+| MacBook CPU | Python for-loop | ~12 秒/iter |
+| Colab T4 GPU + CUDA カーネル | タイルベース並列 | ~0.1〜0.3 秒/iter |
+
 ## model.py
 
 ### GaussianRasterizer
