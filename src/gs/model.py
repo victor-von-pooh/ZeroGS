@@ -155,20 +155,58 @@ class GaussianRasterizer(torch.autograd.Function):
         # d_rendered を CPU に移動
         d_rendered_cpu = d_rendered.cpu()
 
-        # backward では forward と同じ順序でバウンディングボックスを再現しながら勾配を計算
+        # 2パス方式の backward:
         with torch.no_grad():
-            # forward と同じ順序で running_T を再現しながら勾配を計算
+            # forward を再現して alpha, T_i を記録
             running_T = torch.ones(height, width)
+            alphas = []
+            T_before = []
 
-            # Gaussian ごとにバウンディングボックス内のピクセルを処理
+            # 順順に走査
             for i in range(n):
                 # バウンディングボックスの座標を整数に変換
                 y0, y1 = int(y0s[i]), int(y1s[i])
                 x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
+                    alphas.append(None)
+                    T_before.append(None)
                     continue
 
                 # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
+                dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
+                dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
+                ic = inv_cov2d[i]
+                maha = (
+                    ic[0, 0] * dx * dx
+                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    + ic[1, 1] * dy * dy
+                )
+                alpha = (
+                    opacities[i] * torch.exp(-0.5 * maha)
+                ).clamp(max=0.99)
+                T_p = running_T[y0:y1, x0:x1].clone()
+
+                # レンダリング結果を更新
+                alphas.append(alpha)
+                T_before.append(T_p)
+                running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
+
+            # 逆順に走査して勾配を計算
+            accum_after = torch.zeros(3, height, width)
+
+            # Gaussian ごとにバウンディングボックス内のピクセルを処理
+            for i in range(n - 1, -1, -1):
+                # バウンディングボックスの座標を整数に変換
+                y0, y1 = int(y0s[i]), int(y1s[i])
+                x0, x1 = int(x0s[i]), int(x1s[i])
+                if y0 >= y1 or x0 >= x1:
+                    continue
+                if alphas[i] is None:
+                    continue
+
+                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
+                alpha = alphas[i]
+                T_p = T_before[i]
                 dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
@@ -181,19 +219,27 @@ class GaussianRasterizer(torch.autograd.Function):
                 sigma_i = opacities[i]
                 unclamped = sigma_i * exp_term
                 clamp_mask = (unclamped < 0.99).float()
-                alpha = unclamped.clamp(max=0.99)
-                T_p = running_T[y0:y1, x0:x1]
 
-                # バックワードで使用するためのパッチを取得
+                # 勾配のパッチを取得
                 d_patch = d_rendered_cpu[:, y0:y1, x0:x1]
+                weight = T_p * alpha
 
-                # 勾配を計算
+                # 直接項のみの色の勾配
                 d_colors[i] = (
-                    d_patch * (T_p * alpha).unsqueeze(0)
+                    d_patch * weight.unsqueeze(0)
                 ).sum(dim=(-1, -2))
+
+                # 直接項 + 間接項の不透明度の勾配
+                accum_patch = accum_after[:, y0:y1, x0:x1]
+                one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
                 d_alpha = T_p * (
-                    d_patch * colors[i].reshape(3, 1, 1)
-                ).sum(dim=0)
+                    (d_patch * colors[i].reshape(3, 1, 1)).sum(dim=0)
+                    - (1.0 / one_minus_alpha) * (
+                        d_patch * accum_patch
+                    ).sum(dim=0)
+                )
+
+                # clamp_mask をかけて alpha が 0.99 以上の領域の勾配をゼロにする
                 d_unc = d_alpha * clamp_mask
                 d_opacities[i] = (d_unc * exp_term).sum()
                 d_maha = d_unc * (-0.5 * sigma_i * exp_term)
@@ -212,8 +258,10 @@ class GaussianRasterizer(torch.autograd.Function):
                     )
                 ).sum()
 
-                # running_T を更新
-                running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
+                # accum_after を更新
+                accum_after[:, y0:y1, x0:x1] += (
+                    weight.unsqueeze(0) * colors[i].reshape(3, 1, 1)
+                )
 
         # 勾配を元のデバイスに戻す
         return (
