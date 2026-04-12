@@ -208,7 +208,9 @@ def export_ply(model: torch.nn.Module, output_path: str) -> None:
     # SH 係数を DC と rest に分離
     f_dc = sh_coeffs[:, 0, :]
     num_rest = (num_sh - 1) * 3
-    f_rest = sh_coeffs[:, 1:, :].reshape(n_points, -1)
+
+    # 3DGS 標準 PLY は channel-first なので rest 係数を変換
+    f_rest = sh_coeffs[:, 1:, :].transpose(0, 2, 1).reshape(n_points, -1)
 
     # PLY ヘッダーを構築
     header = "ply\n"

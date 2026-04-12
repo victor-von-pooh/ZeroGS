@@ -508,7 +508,7 @@ class GaussianModel(nn.Module):
     def densify_and_prune(
         self, grad_threshold: float = 0.0002, scale_threshold: float = 0.01,
         opacity_threshold: float = 0.005, max_gaussians: int = 100000
-    ):
+    ) -> dict:
         """
         Adaptive Density Control を実行する関数
 
@@ -525,7 +525,8 @@ class GaussianModel(nn.Module):
 
         Returns
         ----------
-        None
+        info_data: dict
+            optimizer state 再構築に必要な情報
         """
         # デバイスの取得
         device = self.means.device
@@ -620,15 +621,22 @@ class GaussianModel(nn.Module):
             ], dim=0
         )
 
+        # clone / split の追加数を記録
+        n_clone = clone_means.shape[0]
+        n_split = split_means.shape[0]
+
         # Gaussian の最大数を超えた場合は不透明度の低い順に削除
+        topk_indices = None
         if new_means.shape[0] > max_gaussians:
             new_opacity_vals = torch.sigmoid(new_opacities[:, 0])
-            topk = torch.topk(new_opacity_vals, max_gaussians).indices
-            new_means = new_means[topk]
-            new_sh = new_sh[topk]
-            new_opacities = new_opacities[topk]
-            new_scales = new_scales[topk]
-            new_rotations = new_rotations[topk]
+            topk_indices = torch.topk(
+                new_opacity_vals, max_gaussians
+            ).indices
+            new_means = new_means[topk_indices]
+            new_sh = new_sh[topk_indices]
+            new_opacities = new_opacities[topk_indices]
+            new_scales = new_scales[topk_indices]
+            new_rotations = new_rotations[topk_indices]
 
         # nn.Parameter として再設定
         self.means = nn.Parameter(new_means)
@@ -639,6 +647,14 @@ class GaussianModel(nn.Module):
 
         # 勾配バッファをリセット
         self.setup_adc()
+
+        # optimizer state 再構築に必要な情報を返す
+        info_data = {
+            "keep_mask": keep_mask, "n_clone": n_clone,
+            "n_split": n_split, "topk": topk_indices
+        }
+
+        return info_data
 
     def reset_opacities(self, new_opacity: float = 0.01):
         """

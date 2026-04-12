@@ -225,30 +225,38 @@ def train_gs(
             # ガウシアンの密化・剪定
             if adc_start <= iteration < adc_stop:
                 if (iteration - adc_start) % adc_interval == 0:
+                    # ADC 前に optimizer state を保存
+                    old_states = []
+                    for pg in optimizer.param_groups:
+                        p = pg["params"][0]
+                        s = optimizer.state.get(p, {})
+                        old_states.append({
+                            k: v.clone() if isinstance(v, torch.Tensor)
+                            else v
+                            for k, v in s.items()
+                        })
+
                     # 勾配の蓄積に基づいて, ガウシアンを密化・剪定
-                    model.densify_and_prune(
+                    adc_info = model.densify_and_prune(
                         grad_threshold, scale_threshold,
                         opacity_threshold, max_gaussians
                     )
+                    keep_mask = adc_info["keep_mask"]
+                    n_clone = adc_info["n_clone"]
+                    n_split = adc_info["n_split"]
+                    topk = adc_info["topk"]
 
-                    # Optimizer の再構築
-                    param_keys = [
-                        "means", "sh_coeffs", "opacities",
-                        "scales", "rotations"
-                    ]
-                    param_tensors = [
+                    # 新しいパラメータで optimizer を再構築
+                    new_params = [
                         model.means, model.sh_coeffs,
                         model.opacities, model.scales, model.rotations,
                     ]
-                    n_groups = len(optimizer.param_groups)
                     new_groups = [
                         {
                             "params": [p],
-                            "lr": optimizer.param_groups[i]["lr"]
-                            if i < n_groups
-                            else optimizer.param_groups[0]["lr"],
+                            "lr": optimizer.param_groups[i]["lr"],
                         }
-                        for i, p in enumerate(param_tensors)
+                        for i, p in enumerate(new_params)
                     ]
                     defaults = optimizer.defaults
                     optimizer = optim.Adam(
@@ -257,6 +265,48 @@ def train_gs(
                         eps=defaults["eps"],
                         weight_decay=defaults.get("weight_decay", 0),
                     )
+
+                    # optimizer state を復元
+                    for gi, pg in enumerate(optimizer.param_groups):
+                        # 新しいパラメータと古い state を取得
+                        p = pg["params"][0]
+                        old_s = old_states[gi]
+                        if not old_s:
+                            continue
+
+                        # 古い state から新しい state を構築
+                        new_s = {}
+                        for key, val in old_s.items():
+                            # テンソルでない値はそのままコピー
+                            if not isinstance(val, torch.Tensor):
+                                new_s[key] = val
+                                continue
+
+                            # スカラーテンソル（step 等）はそのまま
+                            if val.dim() == 0:
+                                new_s[key] = val.clone()
+                                continue
+
+                            # keep_mask で残った部分を取り出す
+                            kept = val[keep_mask]
+
+                            # clone 分はゼロ、split 分もゼロで埋める
+                            padded = torch.cat(
+                                [
+                                    kept, torch.zeros(
+                                        n_clone + n_split, *val.shape[1:],
+                                        device=val.device, dtype=val.dtype
+                                    ),
+                                ], dim=0
+                            )
+
+                            # topk による追加の絞り込み
+                            if topk is not None:
+                                padded = padded[topk]
+                            new_s[key] = padded
+
+                        # 新しい optimizer state に保存
+                        optimizer.state[p] = new_s
 
             # 不透明度のリセット
             if iteration > 0 and iteration % opacity_reset_interval == 0:
