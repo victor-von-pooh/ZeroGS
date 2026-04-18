@@ -232,11 +232,11 @@ class GaussianRasterizer(torch.autograd.Function):
                 # 直接項 + 間接項の不透明度の勾配
                 accum_patch = accum_after[:, y0:y1, x0:x1]
                 one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
-                d_alpha = T_p * (
-                    (d_patch * colors[i].reshape(3, 1, 1)).sum(dim=0)
-                    - (1.0 / one_minus_alpha) * (
-                        d_patch * accum_patch
-                    ).sum(dim=0)
+                d_alpha = (
+                    T_p * (d_patch * colors[i].reshape(3, 1, 1)).sum(dim=0)
+                    - (1.0 / one_minus_alpha) * (d_patch * accum_patch).sum(
+                        dim=0
+                    )
                 )
 
                 # clamp_mask をかけて alpha が 0.99 以上の領域の勾配をゼロにする
