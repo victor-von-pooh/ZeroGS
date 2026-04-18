@@ -658,20 +658,19 @@ class GaussianModel(nn.Module):
 
     def reset_opacities(self, new_opacity: float = 0.01):
         """
-        全 Gaussian の不透明度をリセットする関数
+        全 Gaussian の不透明度を上限付きでリセットする関数
 
         Parameters
         ----------
         new_opacity: float = 0.01
-            リセット後の不透明度
+            リセット後の不透明度の上限
 
         Returns
         ----------
         None
         """
-        # 逆シグモイド変換した値で上書き
         inv_sigmoid = np.log(new_opacity / (1.0 - new_opacity))
-        self.opacities.data.fill_(inv_sigmoid)
+        self.opacities.data.clamp_(max=inv_sigmoid)
 
     @property
     def num_gaussians(self) -> int:

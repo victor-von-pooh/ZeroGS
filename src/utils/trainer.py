@@ -1,4 +1,5 @@
 import random
+from logging import Logger
 from typing import Optional
 
 import torch
@@ -118,7 +119,7 @@ class Options:
 def train_gs(
     model: nn.Module, optimizer: optim.Optimizer, images: dict,
     image_tensors: dict, cameras: dict, cfg: dict, device: torch.device,
-    scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
+    logger: Logger, scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
 ) -> tuple[nn.Module, list]:
     """
     3DGS モデルの学習を行う関数
@@ -245,6 +246,14 @@ def train_gs(
                     n_clone = adc_info["n_clone"]
                     n_split = adc_info["n_split"]
                     topk = adc_info["topk"]
+
+                    # 現在のガウシアン数のログ出力
+                    n_keep = int(keep_mask.sum().item())
+                    logger.info(
+                        f"ADC [iter {iteration}]: "
+                        f"keep={n_keep} clone={n_clone} split={n_split} "
+                        f"→ total={model.num_gaussians}"
+                    )
 
                     # 新しいパラメータで optimizer を再構築
                     new_params = [
