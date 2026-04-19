@@ -243,6 +243,8 @@ def train_gs(
                         opacity_threshold, max_gaussians
                     )
                     keep_mask = adc_info["keep_mask"]
+                    clone_mask = adc_info["clone_mask"]
+                    split_mask = adc_info["split_mask"]
                     n_clone = adc_info["n_clone"]
                     n_split = adc_info["n_split"]
                     topk = adc_info["topk"]
@@ -299,14 +301,19 @@ def train_gs(
                             # keep_mask で残った部分を取り出す
                             kept = val[keep_mask]
 
-                            # clone 分はゼロ、split 分もゼロで埋める
+                            # clone_mask で複製する部分を取り出す
+                            clone_state = val[clone_mask]
+
+                            # split_mask で分割する部分を取り出す
+                            split_src = val[split_mask]
+                            split_state = torch.cat(
+                                [split_src, split_src], dim=0
+                            ) if split_src.shape[0] > 0 else split_src
+
+                            # 新しい state を構築
                             padded = torch.cat(
-                                [
-                                    kept, torch.zeros(
-                                        n_clone + n_split, *val.shape[1:],
-                                        device=val.device, dtype=val.dtype
-                                    ),
-                                ], dim=0
+                                [kept, clone_state, split_state],
+                                dim=0,
                             )
 
                             # topk による追加の絞り込み

@@ -650,7 +650,8 @@ class GaussianModel(nn.Module):
 
         # optimizer state 再構築に必要な情報を返す
         info_data = {
-            "keep_mask": keep_mask, "n_clone": n_clone,
+            "keep_mask": keep_mask, "clone_mask": clone_mask,
+            "split_mask": split_mask, "n_clone": n_clone,
             "n_split": n_split, "topk": topk_indices
         }
 
