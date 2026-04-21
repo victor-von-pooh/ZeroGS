@@ -155,24 +155,15 @@ class GaussianRasterizer(torch.autograd.Function):
         # d_rendered を CPU に移動
         d_rendered_cpu = d_rendered.cpu()
 
-        # 2パス方式の backward:
+        # 逆順に走査して勾配を計算するため、forward と同様のループを逆順で実装
         with torch.no_grad():
-            # forward を再現して alpha, T_i を記録
+            # forward を再現して最終透過率を求める
             running_T = torch.ones(height, width)
-            alphas = []
-            T_before = []
-
-            # 順順に走査
             for i in range(n):
-                # バウンディングボックスの座標を整数に変換
                 y0, y1 = int(y0s[i]), int(y1s[i])
                 x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
-                    alphas.append(None)
-                    T_before.append(None)
                     continue
-
-                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
                 dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
@@ -184,12 +175,7 @@ class GaussianRasterizer(torch.autograd.Function):
                 alpha = (
                     opacities[i] * torch.exp(-0.5 * maha)
                 ).clamp(max=0.99)
-                T_p = running_T[y0:y1, x0:x1].clone()
-
-                # レンダリング結果を更新
-                alphas.append(alpha)
-                T_before.append(T_p)
-                running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
+                running_T[y0:y1, x0:x1] *= (1.0 - alpha)
 
             # 逆順に走査して勾配を計算
             accum_after = torch.zeros(3, height, width)
@@ -201,12 +187,8 @@ class GaussianRasterizer(torch.autograd.Function):
                 x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
                     continue
-                if alphas[i] is None:
-                    continue
 
-                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
-                alpha = alphas[i]
-                T_p = T_before[i]
+                # alpha を再計算
                 dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
@@ -219,6 +201,11 @@ class GaussianRasterizer(torch.autograd.Function):
                 sigma_i = opacities[i]
                 unclamped = sigma_i * exp_term
                 clamp_mask = (unclamped < 0.99).float()
+                alpha = unclamped.clamp(max=0.99)
+
+                # 透過率 T_p を計算
+                one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
+                T_p = running_T[y0:y1, x0:x1] / one_minus_alpha
 
                 # 勾配のパッチを取得
                 d_patch = d_rendered_cpu[:, y0:y1, x0:x1]
@@ -231,7 +218,6 @@ class GaussianRasterizer(torch.autograd.Function):
 
                 # 直接項 + 間接項の不透明度の勾配
                 accum_patch = accum_after[:, y0:y1, x0:x1]
-                one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
                 d_alpha = (
                     T_p * (d_patch * colors[i].reshape(3, 1, 1)).sum(dim=0)
                     - (1.0 / one_minus_alpha) * (d_patch * accum_patch).sum(
@@ -262,6 +248,9 @@ class GaussianRasterizer(torch.autograd.Function):
                 accum_after[:, y0:y1, x0:x1] += (
                     weight.unsqueeze(0) * colors[i].reshape(3, 1, 1)
                 )
+
+                # running_T を T_before に戻す
+                running_T[y0:y1, x0:x1] = T_p
 
         # 勾配を元のデバイスに戻す
         return (
