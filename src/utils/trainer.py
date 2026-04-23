@@ -13,107 +13,131 @@ from src.utils.loss import gs_loss
 class Options:
     def __init__(self, cfg: dict, model: nn.Module):
         # 最適化器の種類の config を取得
-        self.optimizer = cfg["training"]["optimizer"]
+        self.optimizer_name = cfg["training"]["optimizer"]
+        self.cfg = cfg
 
-        # Adagrad
-        self.adagrad = optim.Adagrad(
-            params=model.parameters(),
-            lr=cfg["training"]["learning_rate"],
-            lr_decay=cfg["training"].get("lr_decay", 0),
-            weight_decay=cfg["training"].get("weight_decay", 0),
-            initial_accumulator_value=cfg["training"].get(
-                "initial_accumulator_value", 0
-            ),
-            eps=cfg["training"].get("eps", 1e-10)
-        )
-
-        # Adam
+        # パラメータ別学習率の設定
         lr_default = cfg["training"]["learning_rate"]
         lr_cfg = cfg["training"].get("learning_rates", {})
-        adam_param_groups = [
-            {"params": [model.means],
-             "lr": lr_cfg.get("means", lr_default)},
-            {"params": [model.sh_coeffs],
-             "lr": lr_cfg.get("sh_coeffs", lr_default)},
-            {"params": [model.opacities],
-             "lr": lr_cfg.get("opacities", lr_default)},
-            {"params": [model.scales],
-             "lr": lr_cfg.get("scales", lr_default)},
-            {"params": [model.rotations],
-             "lr": lr_cfg.get("rotations", lr_default)},
+        param_groups = [
+            {
+                "params": [model.means],
+                "lr": lr_cfg.get("means", lr_default)
+            }, {
+                "params": [model.sh_coeffs],
+                "lr": lr_cfg.get("sh_coeffs", lr_default)
+            }, {
+                "params": [model.opacities],
+                "lr": lr_cfg.get("opacities", lr_default)
+            }, {
+                "params": [model.scales],
+                "lr": lr_cfg.get("scales", lr_default)
+            }, {
+                "params": [model.rotations],
+                "lr": lr_cfg.get("rotations", lr_default)
+            }
         ]
-        self.adam = optim.Adam(
-            params=adam_param_groups,
-            betas=tuple(cfg["training"].get("adam_betas", [0.9, 0.999])),
-            eps=cfg["training"].get("adam_eps", 1e-8),
-            weight_decay=cfg["training"].get("adam_weight_decay", 0),
-            amsgrad=cfg["training"].get("amsgrad", False),
-            foreach=cfg["training"].get("foreach", None),
-            maximize=cfg["training"].get("maximize", False),
-            capturable=cfg["training"].get("capturable", False),
-            differentiable=cfg["training"].get("differentiable", False),
-            fused=cfg["training"].get("fused", None)
-        )
 
-        # AdamW
-        self.adamw = optim.AdamW(
-            params=model.parameters(),
-            lr=cfg["training"]["learning_rate"],
-            betas=tuple(cfg["training"].get("adam_betas", [0.9, 0.999])),
-            eps=cfg["training"].get("adam_eps", 1e-8),
-            weight_decay=cfg["training"].get("adam_weight_decay", 0.01),
-            amsgrad=cfg["training"].get("amsgrad", False),
-            maximize=cfg["training"].get("maximize", False),
-            foreach=cfg["training"].get("foreach", None),
-            capturable=cfg["training"].get("capturable", False),
-            differentiable=cfg["training"].get("differentiable", False),
-            fused=cfg["training"].get("fused", None)
-        )
+        # config で指定された最適化器のみを構築
+        self.optimizer = self.build(param_groups)
 
-        # ASGD
-        self.asgd = optim.ASGD(
-            params=model.parameters(),
-            lr=cfg["training"]["learning_rate"],
-            lambd=cfg["training"].get("lambd", 1e-4),
-            alpha=cfg["training"].get("alpha", 0.75),
-            t0=cfg["training"].get("t0", 1e6),
-            weight_decay=cfg["training"].get("weight_decay", 0)
-        )
+    def build(self, param_groups: list[dict]) -> optim.Optimizer:
+        """
+        config に基づいて最適化器を構築するメソッド
 
-        # RAdam
-        self.radam = optim.RAdam(
-            params=model.parameters(),
-            lr=cfg["training"]["learning_rate"],
-            betas=tuple(cfg["training"].get("adam_betas", [0.9, 0.999])),
-            eps=cfg["training"].get("adam_eps", 1e-8),
-            weight_decay=cfg["training"].get("weight_decay", 0),
-            decoupled_weight_decay=cfg["training"].get(
-                "decoupled_weight_decay", False
+        Parameters
+        ----------
+        param_groups: list[dict]
+            パラメータグループ
+
+        Returns
+        ----------
+        optimizer: optim.Optimizer
+            構築された最適化器
+        """
+        # config から最適化器の種類を取得
+        cfg = self.cfg
+        lr_default = cfg["training"]["learning_rate"]
+
+        # Adagrad
+        if self.optimizer_name == "adagrad":
+            return optim.Adagrad(
+                params=param_groups, lr=lr_default,
+                lr_decay=cfg["training"].get("lr_decay", 0),
+                weight_decay=cfg["training"].get("weight_decay", 0),
+                initial_accumulator_value=cfg["training"].get(
+                    "initial_accumulator_value", 0
+                ), eps=cfg["training"].get("eps", 1e-10)
             )
-        )
-
+        
+        # Adam
+        elif self.optimizer_name == "adam":
+            return optim.Adam(
+                params=param_groups, lr=lr_default, betas=tuple(
+                    cfg["training"].get("adam_betas", [0.9, 0.999])
+                ), eps=cfg["training"].get("adam_eps", 1e-8),
+                weight_decay=cfg["training"].get("adam_weight_decay", 0),
+                amsgrad=cfg["training"].get("amsgrad", False),
+                foreach=cfg["training"].get("foreach", None),
+                maximize=cfg["training"].get("maximize", False),
+                capturable=cfg["training"].get("capturable", False),
+                differentiable=cfg["training"].get("differentiable", False),
+                fused=cfg["training"].get("fused", None)
+            )
+        
+        # AdamW
+        elif self.optimizer_name == "adamw":
+            return optim.AdamW(
+                params=param_groups, lr=lr_default, betas=tuple(
+                    cfg["training"].get("adam_betas", [0.9, 0.999])
+                ), eps=cfg["training"].get("adam_eps", 1e-8),
+                weight_decay=cfg["training"].get("adam_weight_decay", 0.01),
+                amsgrad=cfg["training"].get("amsgrad", False),
+                maximize=cfg["training"].get("maximize", False),
+                foreach=cfg["training"].get("foreach", None),
+                capturable=cfg["training"].get("capturable", False),
+                differentiable=cfg["training"].get("differentiable", False),
+                fused=cfg["training"].get("fused", None)
+            )
+        
+        # ASGD
+        elif self.optimizer_name == "asgd":
+            return optim.ASGD(
+                params=param_groups, lr=lr_default,
+                lambd=cfg["training"].get("lambd", 1e-4),
+                alpha=cfg["training"].get("alpha", 0.75),
+                t0=cfg["training"].get("t0", 1e6),
+                weight_decay=cfg["training"].get("weight_decay", 0)
+            )
+        
+        # RAdam
+        elif self.optimizer_name == "radam":
+            return optim.RAdam(
+                params=param_groups, lr=lr_default, betas=tuple(
+                    cfg["training"].get("adam_betas", [0.9, 0.999])
+                ), eps=cfg["training"].get("adam_eps", 1e-8),
+                weight_decay=cfg["training"].get("weight_decay", 0),
+                decoupled_weight_decay=cfg["training"].get(
+                    "decoupled_weight_decay", False
+                )
+            )
+        
         # SGD
-        self.sgd = optim.SGD(
-            params=model.parameters(),
-            lr=cfg["training"]["learning_rate"],
-            momentum=cfg["training"].get("momentum", 0),
-            dampening=cfg["training"].get("dampening", 0),
-            weight_decay=cfg["training"].get("weight_decay", 0),
-            nesterov=cfg["training"].get("nesterov", False)
-        )
+        elif self.optimizer_name == "sgd":
+            return optim.SGD(
+                params=param_groups, lr=lr_default,
+                momentum=cfg["training"].get("momentum", 0),
+                dampening=cfg["training"].get("dampening", 0),
+                weight_decay=cfg["training"].get("weight_decay", 0),
+                nesterov=cfg["training"].get("nesterov", False)
+            )
+        
+        # その他の最適化器は未対応
+        else:
+            raise ValueError(
+                f"未対応の最適化器: {self.optimizer_name}"
+            )
 
-    def getter(self) -> optim.Optimizer:
-        # 最適化器の辞書
-        opt_dict = {
-            "adagrad": self.adagrad, "adam": self.adam,
-            "adamw": self.adamw, "asgd": self.asgd,
-            "radam": self.radam, "sgd": self.sgd
-        }
-
-        # config で指定された最適化器を返す
-        optimizer = opt_dict[self.optimizer]
-
-        return optimizer
 
 
 def train_gs(
@@ -231,11 +255,12 @@ def train_gs(
                     for pg in optimizer.param_groups:
                         p = pg["params"][0]
                         s = optimizer.state.get(p, {})
-                        old_states.append({
-                            k: v.clone() if isinstance(v, torch.Tensor)
-                            else v
-                            for k, v in s.items()
-                        })
+                        old_states.append(
+                            {
+                                k: v.clone() if isinstance(v, torch.Tensor)
+                                else v for k, v in s.items()
+                            }
+                        )
 
                     # 勾配の蓄積に基づいて, ガウシアンを密化・剪定
                     adc_info = model.densify_and_prune(
@@ -257,25 +282,21 @@ def train_gs(
                         f"→ total={model.num_gaussians}"
                     )
 
-                    # 新しいパラメータで optimizer を再構築
+                    # optimizer のパラメータ参照を新しいものに差し替え
                     new_params = [
                         model.means, model.sh_coeffs,
                         model.opacities, model.scales, model.rotations,
                     ]
-                    new_groups = [
-                        {
-                            "params": [p],
-                            "lr": optimizer.param_groups[i]["lr"],
-                        }
-                        for i, p in enumerate(new_params)
-                    ]
-                    defaults = optimizer.defaults
-                    optimizer = optim.Adam(
-                        new_groups,
-                        betas=defaults["betas"],
-                        eps=defaults["eps"],
-                        weight_decay=defaults.get("weight_decay", 0),
-                    )
+                    for i, p in enumerate(new_params):
+                        old_p = optimizer.param_groups[i]["params"][0]
+                        # 古いパラメータの state を退避
+                        state = optimizer.state.pop(old_p, {})
+                        # 参照を差し替え
+                        optimizer.param_groups[i]["params"] = [p]
+                        # state を新しいパラメータに紐付け
+                        assert isinstance(p, torch.Tensor)
+                        if state:
+                            optimizer.state[p] = state
 
                     # optimizer state を復元
                     for gi, pg in enumerate(optimizer.param_groups):
@@ -312,8 +333,7 @@ def train_gs(
 
                             # 新しい state を構築
                             padded = torch.cat(
-                                [kept, clone_state, split_state],
-                                dim=0,
+                                [kept, clone_state, split_state], dim=0
                             )
 
                             # topk による追加の絞り込み

@@ -104,7 +104,7 @@ logger.info(f"Gaussian 数: {model.num_gaussians}")
 
 # Optimizer 初期化
 options = Options(cfg, model)
-optimizer = options.getter()
+optimizer = options.optimizer
 logger.info(f"Optimizer: {cfg['training']['optimizer']}")
 logger.info(f"Learning rate: {cfg['training']['learning_rate']}")
 
