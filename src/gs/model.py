@@ -61,8 +61,7 @@ class GaussianRasterizer(torch.autograd.Function):
             # ピクセル座標グリッド（CPU）
             py, px = torch.meshgrid(
                 torch.arange(height, dtype=torch.float32),
-                torch.arange(width, dtype=torch.float32),
-                indexing="ij"
+                torch.arange(width, dtype=torch.float32), indexing="ij"
             )
             rendered = torch.zeros(3, height, width)
             running_T = torch.ones(height, width)
@@ -80,8 +79,7 @@ class GaussianRasterizer(torch.autograd.Function):
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d_c[i]
                 maha = (
-                    ic[0, 0] * dx * dx
-                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    ic[0, 0] * dx * dx + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 alpha = (
@@ -168,8 +166,7 @@ class GaussianRasterizer(torch.autograd.Function):
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
                 maha = (
-                    ic[0, 0] * dx * dx
-                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    ic[0, 0] * dx * dx + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 alpha = (
@@ -193,8 +190,7 @@ class GaussianRasterizer(torch.autograd.Function):
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
                 maha = (
-                    ic[0, 0] * dx * dx
-                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    ic[0, 0] * dx * dx + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 exp_term = torch.exp(-0.5 * maha)
@@ -212,9 +208,9 @@ class GaussianRasterizer(torch.autograd.Function):
                 weight = T_p * alpha
 
                 # 直接項のみの色の勾配
-                d_colors[i] = (
-                    d_patch * weight.unsqueeze(0)
-                ).sum(dim=(-1, -2))
+                d_colors[i] = (d_patch * weight.unsqueeze(0)).sum(
+                    dim=(-1, -2)
+                )
 
                 # 直接項 + 間接項の不透明度の勾配
                 accum_patch = accum_after[:, y0:y1, x0:x1]
@@ -441,7 +437,8 @@ class GaussianModel(nn.Module):
         means2d = means2d[visible]
         inv_cov2d = inv_cov2d[visible]
         colors = colors[visible]
-        # opacities: (N, 1) → (N,) に変換して渡す
+
+        # (N, 1) → (N,) に変換して渡す
         opacities = opacities[visible, 0]
         sigma_max_vis = sigma_max[visible].detach()
 
@@ -756,16 +753,14 @@ def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
     # Degree 1
     if sh_coeffs.shape[1] > 1:
         result = result + c1 * (
-            -y * sh_coeffs[:, 1]
-            + z * sh_coeffs[:, 2]
+            -y * sh_coeffs[:, 1] + z * sh_coeffs[:, 2]
             - x * sh_coeffs[:, 3]
         )
 
     # Degree 2
     if sh_coeffs.shape[1] > 4:
         result = result + (
-            c2[0] * xy * sh_coeffs[:, 4]
-            + c2[1] * yz * sh_coeffs[:, 5]
+            c2[0] * xy * sh_coeffs[:, 4] + c2[1] * yz * sh_coeffs[:, 5]
             + c2[2] * (2.0 * zz - xx - yy) * sh_coeffs[:, 6]
             + c2[3] * xz * sh_coeffs[:, 7]
             + c2[4] * (xx - yy) * sh_coeffs[:, 8]
