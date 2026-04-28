@@ -189,6 +189,7 @@ def train_gs(
     scale_threshold = adc_cfg.get("scale_threshold", 0.01)
     opacity_threshold = adc_cfg.get("opacity_threshold", 0.005)
     max_gaussians = adc_cfg.get("max_gaussians", 100000)
+    max_world_scale = adc_cfg.get("max_world_scale", None)
 
     # ADC 用の勾配蓄積バッファを初期化
     model.setup_adc()
@@ -265,7 +266,7 @@ def train_gs(
                     # 勾配の蓄積に基づいて, ガウシアンを密化・剪定
                     adc_info = model.densify_and_prune(
                         grad_threshold, scale_threshold,
-                        opacity_threshold, max_gaussians
+                        opacity_threshold, max_gaussians, max_world_scale
                     )
                     keep_mask = adc_info["keep_mask"]
                     clone_mask = adc_info["clone_mask"]

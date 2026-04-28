@@ -39,11 +39,12 @@
             "start_iteration": 500,
             "interval": 100,
             "stop_iteration": 5000,
-            "opacity_reset_interval": 999999,
+            "opacity_reset_interval": 3000,
             "grad_threshold": 0.0002,
             "scale_threshold": 0.01,
             "opacity_threshold": 0.005,
-            "max_gaussians": 100000
+            "max_gaussians": 100000,
+            "max_world_scale": 0.5
         }
     },
     "device": "auto"

@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 from scipy.spatial import KDTree
 import torch
@@ -493,7 +495,8 @@ class GaussianModel(nn.Module):
 
     def densify_and_prune(
         self, grad_threshold: float = 0.0002, scale_threshold: float = 0.01,
-        opacity_threshold: float = 0.005, max_gaussians: int = 100000
+        opacity_threshold: float = 0.005, max_gaussians: int = 100000,
+        max_world_scale: Optional[float] = None
     ) -> dict:
         """
         Adaptive Density Control を実行する関数
@@ -503,11 +506,13 @@ class GaussianModel(nn.Module):
         grad_threshold: float = 0.0002
             勾配の閾値
         scale_threshold: float = 0.01
-            スケールの閾値
+            split / clone を分ける scale 閾値
         opacity_threshold: float = 0.005
             不透明度の閾値
         max_gaussians: int = 100000
             Gaussian の最大数
+        max_world_scale: Optional[float] = None
+            world-space で許容する最大スケール
 
         Returns
         ----------
@@ -579,9 +584,12 @@ class GaussianModel(nn.Module):
             split_scales = torch.empty(0, 3, device=device)
             split_rotations = torch.empty(0, 4, device=device)
 
-        # 不透明度が閾値以下の Gaussian と分割された Gaussian を削除
+        # 不透明度が閾値以下 / 巨大すぎる / 分割された Gaussian を削除
         opacity_vals = torch.sigmoid(self.opacities.data[:, 0])
         prune_mask = (opacity_vals < opacity_threshold) | split_mask
+        if max_world_scale is not None:
+            big_world_mask = max_scale > max_world_scale
+            prune_mask = prune_mask | big_world_mask
         keep_mask = ~prune_mask
 
         # 残す Gaussian と複製・分割された Gaussian を結合
@@ -645,19 +653,19 @@ class GaussianModel(nn.Module):
 
     def reset_opacities(self, new_opacity: float = 0.01):
         """
-        全 Gaussian の不透明度を上限付きでリセットする関数
+        全 Gaussian の不透明度をリセットする関数
 
         Parameters
         ----------
         new_opacity: float = 0.01
-            リセット後の不透明度の上限
+            リセット後の不透明度
 
         Returns
         ----------
         None
         """
         inv_sigmoid = np.log(new_opacity / (1.0 - new_opacity))
-        self.opacities.data.clamp_(max=inv_sigmoid)
+        self.opacities.data.fill_(inv_sigmoid)
 
     @property
     def num_gaussians(self) -> int:
