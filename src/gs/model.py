@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 from scipy.spatial import KDTree
 import torch
@@ -61,8 +63,7 @@ class GaussianRasterizer(torch.autograd.Function):
             # ピクセル座標グリッド（CPU）
             py, px = torch.meshgrid(
                 torch.arange(height, dtype=torch.float32),
-                torch.arange(width, dtype=torch.float32),
-                indexing="ij"
+                torch.arange(width, dtype=torch.float32), indexing="ij"
             )
             rendered = torch.zeros(3, height, width)
             running_T = torch.ones(height, width)
@@ -80,8 +81,7 @@ class GaussianRasterizer(torch.autograd.Function):
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d_c[i]
                 maha = (
-                    ic[0, 0] * dx * dx
-                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    ic[0, 0] * dx * dx + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 alpha = (
@@ -155,41 +155,26 @@ class GaussianRasterizer(torch.autograd.Function):
         # d_rendered を CPU に移動
         d_rendered_cpu = d_rendered.cpu()
 
-        # 2パス方式の backward:
+        # 逆順に走査して勾配を計算するため、forward と同様のループを逆順で実装
         with torch.no_grad():
-            # forward を再現して alpha, T_i を記録
+            # forward を再現して最終透過率を求める
             running_T = torch.ones(height, width)
-            alphas = []
-            T_before = []
-
-            # 順順に走査
             for i in range(n):
-                # バウンディングボックスの座標を整数に変換
                 y0, y1 = int(y0s[i]), int(y1s[i])
                 x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
-                    alphas.append(None)
-                    T_before.append(None)
                     continue
-
-                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
                 dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
                 maha = (
-                    ic[0, 0] * dx * dx
-                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    ic[0, 0] * dx * dx + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 alpha = (
                     opacities[i] * torch.exp(-0.5 * maha)
                 ).clamp(max=0.99)
-                T_p = running_T[y0:y1, x0:x1].clone()
-
-                # レンダリング結果を更新
-                alphas.append(alpha)
-                T_before.append(T_p)
-                running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
+                running_T[y0:y1, x0:x1] *= (1.0 - alpha)
 
             # 逆順に走査して勾配を計算
             accum_after = torch.zeros(3, height, width)
@@ -201,42 +186,41 @@ class GaussianRasterizer(torch.autograd.Function):
                 x0, x1 = int(x0s[i]), int(x1s[i])
                 if y0 >= y1 or x0 >= x1:
                     continue
-                if alphas[i] is None:
-                    continue
 
-                # バウンディングボックス内のピクセルに対してマハラノビス距離を計算
-                alpha = alphas[i]
-                T_p = T_before[i]
+                # alpha を再計算
                 dx = px[y0:y1, x0:x1] - float(mu_np[i, 0])
                 dy = py[y0:y1, x0:x1] - float(mu_np[i, 1])
                 ic = inv_cov2d[i]
                 maha = (
-                    ic[0, 0] * dx * dx
-                    + (ic[0, 1] + ic[1, 0]) * dx * dy
+                    ic[0, 0] * dx * dx + (ic[0, 1] + ic[1, 0]) * dx * dy
                     + ic[1, 1] * dy * dy
                 )
                 exp_term = torch.exp(-0.5 * maha)
                 sigma_i = opacities[i]
                 unclamped = sigma_i * exp_term
                 clamp_mask = (unclamped < 0.99).float()
+                alpha = unclamped.clamp(max=0.99)
+
+                # 透過率 T_p を計算
+                one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
+                T_p = running_T[y0:y1, x0:x1] / one_minus_alpha
 
                 # 勾配のパッチを取得
                 d_patch = d_rendered_cpu[:, y0:y1, x0:x1]
                 weight = T_p * alpha
 
                 # 直接項のみの色の勾配
-                d_colors[i] = (
-                    d_patch * weight.unsqueeze(0)
-                ).sum(dim=(-1, -2))
+                d_colors[i] = (d_patch * weight.unsqueeze(0)).sum(
+                    dim=(-1, -2)
+                )
 
                 # 直接項 + 間接項の不透明度の勾配
                 accum_patch = accum_after[:, y0:y1, x0:x1]
-                one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
-                d_alpha = T_p * (
-                    (d_patch * colors[i].reshape(3, 1, 1)).sum(dim=0)
-                    - (1.0 / one_minus_alpha) * (
-                        d_patch * accum_patch
-                    ).sum(dim=0)
+                d_alpha = (
+                    T_p * (d_patch * colors[i].reshape(3, 1, 1)).sum(dim=0)
+                    - (1.0 / one_minus_alpha) * (d_patch * accum_patch).sum(
+                        dim=0
+                    )
                 )
 
                 # clamp_mask をかけて alpha が 0.99 以上の領域の勾配をゼロにする
@@ -262,6 +246,9 @@ class GaussianRasterizer(torch.autograd.Function):
                 accum_after[:, y0:y1, x0:x1] += (
                     weight.unsqueeze(0) * colors[i].reshape(3, 1, 1)
                 )
+
+                # running_T を T_before に戻す
+                running_T[y0:y1, x0:x1] = T_p
 
         # 勾配を元のデバイスに戻す
         return (
@@ -452,7 +439,8 @@ class GaussianModel(nn.Module):
         means2d = means2d[visible]
         inv_cov2d = inv_cov2d[visible]
         colors = colors[visible]
-        # opacities: (N, 1) → (N,) に変換して渡す
+
+        # (N, 1) → (N,) に変換して渡す
         opacities = opacities[visible, 0]
         sigma_max_vis = sigma_max[visible].detach()
 
@@ -507,8 +495,9 @@ class GaussianModel(nn.Module):
 
     def densify_and_prune(
         self, grad_threshold: float = 0.0002, scale_threshold: float = 0.01,
-        opacity_threshold: float = 0.005, max_gaussians: int = 100000
-    ):
+        opacity_threshold: float = 0.005, max_gaussians: int = 100000,
+        max_world_scale: Optional[float] = None
+    ) -> dict:
         """
         Adaptive Density Control を実行する関数
 
@@ -517,15 +506,18 @@ class GaussianModel(nn.Module):
         grad_threshold: float = 0.0002
             勾配の閾値
         scale_threshold: float = 0.01
-            スケールの閾値
+            split / clone を分ける scale 閾値
         opacity_threshold: float = 0.005
             不透明度の閾値
         max_gaussians: int = 100000
             Gaussian の最大数
+        max_world_scale: Optional[float] = None
+            world-space で許容する最大スケール
 
         Returns
         ----------
-        None
+        info_data: dict
+            optimizer state 再構築に必要な情報
         """
         # デバイスの取得
         device = self.means.device
@@ -592,9 +584,12 @@ class GaussianModel(nn.Module):
             split_scales = torch.empty(0, 3, device=device)
             split_rotations = torch.empty(0, 4, device=device)
 
-        # 不透明度が閾値以下の Gaussian と分割された Gaussian を削除
+        # 不透明度が閾値以下 / 巨大すぎる / 分割された Gaussian を削除
         opacity_vals = torch.sigmoid(self.opacities.data[:, 0])
         prune_mask = (opacity_vals < opacity_threshold) | split_mask
+        if max_world_scale is not None:
+            big_world_mask = max_scale > max_world_scale
+            prune_mask = prune_mask | big_world_mask
         keep_mask = ~prune_mask
 
         # 残す Gaussian と複製・分割された Gaussian を結合
@@ -620,15 +615,22 @@ class GaussianModel(nn.Module):
             ], dim=0
         )
 
+        # clone / split の追加数を記録
+        n_clone = clone_means.shape[0]
+        n_split = split_means.shape[0]
+
         # Gaussian の最大数を超えた場合は不透明度の低い順に削除
+        topk_indices = None
         if new_means.shape[0] > max_gaussians:
             new_opacity_vals = torch.sigmoid(new_opacities[:, 0])
-            topk = torch.topk(new_opacity_vals, max_gaussians).indices
-            new_means = new_means[topk]
-            new_sh = new_sh[topk]
-            new_opacities = new_opacities[topk]
-            new_scales = new_scales[topk]
-            new_rotations = new_rotations[topk]
+            topk_indices = torch.topk(
+                new_opacity_vals, max_gaussians
+            ).indices
+            new_means = new_means[topk_indices]
+            new_sh = new_sh[topk_indices]
+            new_opacities = new_opacities[topk_indices]
+            new_scales = new_scales[topk_indices]
+            new_rotations = new_rotations[topk_indices]
 
         # nn.Parameter として再設定
         self.means = nn.Parameter(new_means)
@@ -639,6 +641,15 @@ class GaussianModel(nn.Module):
 
         # 勾配バッファをリセット
         self.setup_adc()
+
+        # optimizer state 再構築に必要な情報を返す
+        info_data = {
+            "keep_mask": keep_mask, "clone_mask": clone_mask,
+            "split_mask": split_mask, "n_clone": n_clone,
+            "n_split": n_split, "topk": topk_indices
+        }
+
+        return info_data
 
     def reset_opacities(self, new_opacity: float = 0.01):
         """
@@ -653,7 +664,6 @@ class GaussianModel(nn.Module):
         ----------
         None
         """
-        # 逆シグモイド変換した値で上書き
         inv_sigmoid = np.log(new_opacity / (1.0 - new_opacity))
         self.opacities.data.fill_(inv_sigmoid)
 
@@ -751,16 +761,14 @@ def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
     # Degree 1
     if sh_coeffs.shape[1] > 1:
         result = result + c1 * (
-            -y * sh_coeffs[:, 1]
-            + z * sh_coeffs[:, 2]
+            -y * sh_coeffs[:, 1] + z * sh_coeffs[:, 2]
             - x * sh_coeffs[:, 3]
         )
 
     # Degree 2
     if sh_coeffs.shape[1] > 4:
         result = result + (
-            c2[0] * xy * sh_coeffs[:, 4]
-            + c2[1] * yz * sh_coeffs[:, 5]
+            c2[0] * xy * sh_coeffs[:, 4] + c2[1] * yz * sh_coeffs[:, 5]
             + c2[2] * (2.0 * zz - xx - yy) * sh_coeffs[:, 6]
             + c2[3] * xz * sh_coeffs[:, 7]
             + c2[4] * (xx - yy) * sh_coeffs[:, 8]

@@ -104,7 +104,7 @@ logger.info(f"Gaussian 数: {model.num_gaussians}")
 
 # Optimizer 初期化
 options = Options(cfg, model)
-optimizer = options.getter()
+optimizer = options.optimizer
 logger.info(f"Optimizer: {cfg['training']['optimizer']}")
 logger.info(f"Learning rate: {cfg['training']['learning_rate']}")
 
@@ -114,14 +114,12 @@ if cfg["training"]["scheduler"]["use"]:
     scheduler_type = cfg["training"]["scheduler"]["type"]
     if scheduler_type == "StepLR":
         scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=cfg["training"]["scheduler"]["step_size"],
+            optimizer, step_size=cfg["training"]["scheduler"]["step_size"],
             gamma=cfg["training"]["scheduler"]["gamma"]
         )
     elif scheduler_type == "ReduceLROnPlateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode=cfg["training"]["scheduler"]["mode"],
+            optimizer, mode=cfg["training"]["scheduler"]["mode"],
             factor=cfg["training"]["scheduler"]["factor"],
             patience=cfg["training"]["scheduler"]["patience"],
             min_lr=cfg["training"]["scheduler"]["min_lr"]
@@ -133,10 +131,9 @@ else:
 # 学習実行
 start_time = time.time()
 model, train_loss_list = train_gs(
-    model=model, optimizer=optimizer,
-    images=train_images, image_tensors=train_tensors,
-    cameras=cameras, cfg=cfg, device=device,
-    scheduler=scheduler
+    model=model, optimizer=optimizer, images=train_images,
+    image_tensors=train_tensors, cameras=cameras, cfg=cfg, device=device,
+    logger=logger, scheduler=scheduler
 )
 end_time = time.time()
 elapsed_time = end_time - start_time
@@ -178,7 +175,7 @@ logger.info(f"PLY 保存先: {ply_path}")
 # レンダリング画像の保存
 renders_dir = output_dir / "renders"
 save_rendered_images(
-    model, test_images, test_tensors,
-    cameras, device, str(renders_dir), resolution_scale
+    model, test_images, test_tensors, cameras, device,
+    str(renders_dir), resolution_scale
 )
 logger.info(f"レンダリング画像保存先: {renders_dir}")
