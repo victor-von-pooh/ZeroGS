@@ -159,6 +159,9 @@ def evaluate(
                 scaled_params, render_w, render_h
             )
 
+        # レンダリング結果を [0, 1] にクランプ
+        rendered = rendered.clamp(0.0, 1.0)
+
         # 正解画像のリサイズ
         gt = test_tensors[image_id].to(device)
         resize = transforms.Resize((render_h, render_w))

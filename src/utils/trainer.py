@@ -179,6 +179,23 @@ def train_gs(
     lambda_ssim = cfg["training"].get("lambda_ssim", 0.2)
     resolution_scale = cfg["training"].get("resolution_scale", 1)
 
+    # 背景色
+    bg_color_cfg = cfg["training"].get("bg_color", [0.0, 0.0, 0.0])
+    bg_color = torch.tensor(bg_color_cfg, dtype=torch.float32, device=device)
+
+    # 位置の学習率の指数減衰の設定
+    means_lr_init = optimizer.param_groups[0]["lr"]
+    means_lr_final_ratio = cfg["training"].get(
+        "means_lr_final_ratio", 0.01
+    )
+    means_lr_decay = means_lr_final_ratio ** (1.0 / max(num_iterations, 1))
+
+    # SH degree の段階的増加の設定
+    sh_increment_interval = cfg["training"].get(
+        "sh_increment_interval", 1000
+    )
+    model.active_sh_degree = 0
+
     # ADC 設定の取得
     adc_cfg = cfg["training"].get("adc", {})
     adc_start = adc_cfg.get("start_iteration", 500)
@@ -206,6 +223,23 @@ def train_gs(
             # イテレーション数の表示
             pbar.set_description(f"Iteration {iteration + 1}")
 
+            # 位置の学習率を指数関数的に減衰
+            optimizer.param_groups[0]["lr"] = (
+                means_lr_init * (means_lr_decay ** iteration)
+            )
+
+            # SH degree を段階的に増やす
+            if (
+                iteration > 0
+                and iteration % sh_increment_interval == 0
+                and model.active_sh_degree < model.sh_degree
+            ):
+                model.active_sh_degree += 1
+                logger.info(
+                    f"SH degree → {model.active_sh_degree} "
+                    f"(iter {iteration})"
+                )
+
             # ランダムに画像を選択
             image_id = random.choice(image_ids)
             image_data = images[image_id]
@@ -232,7 +266,7 @@ def train_gs(
             # 順伝播の計算
             rendered = model(
                 image_data["qvec"], image_data["tvec"],
-                scaled_params, render_w, render_h
+                scaled_params, render_w, render_h, bg_color
             )
 
             # 損失計算

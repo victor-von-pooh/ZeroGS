@@ -8,7 +8,7 @@
     "data": {
         "data_dir": "data",
         "resolution_scale": 2,
-        "max_initial_gaussians": 20000
+        "max_initial_gaussians": null
     },
     "training": {
         "iterations": 7000,
@@ -20,6 +20,9 @@
             "scales":    5e-3,
             "rotations": 1e-3
         },
+        "means_lr_final_ratio": 0.01,
+        "sh_increment_interval": 1000,
+        "bg_color": [0.0, 0.0, 0.0],
         "optimizer": "adam",
         "adam_betas": [0.9, 0.999],
         "adam_eps": 1e-15,

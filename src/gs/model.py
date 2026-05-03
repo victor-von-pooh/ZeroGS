@@ -12,7 +12,7 @@ class GaussianRasterizer(torch.autograd.Function):
         ctx: torch.autograd.Function, means2d: torch.Tensor,
         inv_cov2d: torch.Tensor, colors: torch.Tensor,
         opacities: torch.Tensor, sigma_max: torch.Tensor,
-        height: int, width: int
+        height: int, width: int, bg_color: torch.Tensor
     ) -> torch.Tensor:
         """
         Parameters
@@ -33,6 +33,8 @@ class GaussianRasterizer(torch.autograd.Function):
             画像の高さ
         width: int
             画像の幅
+        bg_color: torch.Tensor
+            背景色
 
         Returns
         ----------
@@ -43,14 +45,15 @@ class GaussianRasterizer(torch.autograd.Function):
         device = means2d.device
         n = means2d.shape[0]
 
-        # ラスタライザは Python for-loop のため CPU で実行（MPS/CUDA はカーネル起動オーバーヘッドが大きい）
+        # CPU に移動して numpy でバウンディングボックスを一括計算するため、必要なテンソルを CPU に移動
         means2d_c = means2d.cpu()
         inv_cov2d_c = inv_cov2d.cpu()
         colors_c = colors.cpu()
         opacities_c = opacities.cpu()
         sigma_max_c = sigma_max.cpu()
+        bg_color_c = bg_color.detach().cpu()
 
-        # forward では勾配を計算しないためm torch.no_grad() コンテキストで実装
+        # forward では勾配を計算しないため torch.no_grad() コンテキストで実装
         with torch.no_grad():
             # バウンディングボックスを numpy で一括計算
             mu_np = means2d_c.numpy()
@@ -60,10 +63,11 @@ class GaussianRasterizer(torch.autograd.Function):
             x0s = np.clip((mu_np[:, 0] - rad_np).astype(int), 0, width)
             x1s = np.clip((mu_np[:, 0] + rad_np).astype(int) + 1, 0, width)
 
-            # ピクセル座標グリッド（CPU）
+            # ピクセル座標グリッド
             py, px = torch.meshgrid(
-                torch.arange(height, dtype=torch.float32),
-                torch.arange(width, dtype=torch.float32), indexing="ij"
+                torch.arange(height, dtype=torch.float32) + 0.5,
+                torch.arange(width, dtype=torch.float32) + 0.5,
+                indexing="ij"
             )
             rendered = torch.zeros(3, height, width)
             running_T = torch.ones(height, width)
@@ -87,6 +91,11 @@ class GaussianRasterizer(torch.autograd.Function):
                 alpha = (
                     opacities_c[i] * torch.exp(-0.5 * maha)
                 ).clamp(max=0.99)
+
+                # alpha 0.99 以上はほぼ完全に不透明で勾配が消えるため、0.99 以上は 0.99 にクランプして勾配を切る
+                alpha = torch.where(
+                    alpha > 1.0 / 255.0, alpha, torch.zeros_like(alpha)
+                )
                 T_p = running_T[y0:y1, x0:x1]
 
                 # レンダリング結果を更新
@@ -95,9 +104,13 @@ class GaussianRasterizer(torch.autograd.Function):
                 )
                 running_T[y0:y1, x0:x1] = T_p * (1.0 - alpha)
 
-        # px, py を backward で再利用するため保存（CPU テンソル）
+            # 残り透過率分だけ背景色を加算
+            rendered += running_T.unsqueeze(0) * bg_color_c.reshape(3, 1, 1)
+
+        # px, py を backward で再利用するため保存
         ctx.save_for_backward(
-            means2d_c, inv_cov2d_c, colors_c, opacities_c, sigma_max_c, px, py
+            means2d_c, inv_cov2d_c, colors_c, opacities_c, sigma_max_c,
+            px, py, bg_color_c
         )
         ctx.bboxes = (y0s, y1s, x0s, x1s)
         ctx.height = height
@@ -136,8 +149,11 @@ class GaussianRasterizer(torch.autograd.Function):
         d_width: int
             画像の幅の勾配
         """
-        # 保存されたテンソルと情報を取得（すべて CPU テンソル）
-        means2d, inv_cov2d, colors, opacities, _, px, py = ctx.saved_tensors
+        # 保存されたテンソルと情報を取得
+        (
+            means2d, inv_cov2d, colors, opacities, _,
+            px, py, bg_color
+        ) = ctx.saved_tensors
         y0s, y1s, x0s, x1s = ctx.bboxes
         mu_np = means2d.numpy()
         height = ctx.height
@@ -174,10 +190,15 @@ class GaussianRasterizer(torch.autograd.Function):
                 alpha = (
                     opacities[i] * torch.exp(-0.5 * maha)
                 ).clamp(max=0.99)
+                alpha = torch.where(
+                    alpha > 1.0 / 255.0, alpha, torch.zeros_like(alpha)
+                )
                 running_T[y0:y1, x0:x1] *= (1.0 - alpha)
 
-            # 逆順に走査して勾配を計算
-            accum_after = torch.zeros(3, height, width)
+            # accum_after を初期化
+            accum_after = (
+                running_T.unsqueeze(0) * bg_color.reshape(3, 1, 1)
+            ).clone()
 
             # Gaussian ごとにバウンディングボックス内のピクセルを処理
             for i in range(n - 1, -1, -1):
@@ -198,8 +219,15 @@ class GaussianRasterizer(torch.autograd.Function):
                 exp_term = torch.exp(-0.5 * maha)
                 sigma_i = opacities[i]
                 unclamped = sigma_i * exp_term
-                clamp_mask = (unclamped < 0.99).float()
+
+                # alpha 0.99 以上はほぼ完全に不透明で勾配が消えるため、0.99 以上は 0.99 にクランプして勾配を切る
+                clamp_mask = (
+                    (unclamped < 0.99) & (unclamped > 1.0 / 255.0)
+                ).float()
                 alpha = unclamped.clamp(max=0.99)
+                alpha = torch.where(
+                    alpha > 1.0 / 255.0, alpha, torch.zeros_like(alpha)
+                )
 
                 # 透過率 T_p を計算
                 one_minus_alpha = (1.0 - alpha).clamp(min=1e-6)
@@ -250,11 +278,11 @@ class GaussianRasterizer(torch.autograd.Function):
                 # running_T を T_before に戻す
                 running_T[y0:y1, x0:x1] = T_p
 
-        # 勾配を元のデバイスに戻す
+        # 勾配を元のデバイスに戻して返す
         return (
             d_means2d.to(orig_device), d_inv_cov2d.to(orig_device),
             d_colors.to(orig_device), d_opacities.to(orig_device),
-            d_sigma_max.to(orig_device), None, None
+            d_sigma_max.to(orig_device), None, None, None
         )
 
 
@@ -266,6 +294,9 @@ class GaussianModel(nn.Module):
         # SH の次数と係数数を保存
         self.sh_degree = sh_degree
         self.num_sh_coeffs = (sh_degree + 1) ** 2
+
+        # ADC 用の勾配蓄積バッファを初期化
+        self.active_sh_degree = 0
 
         # points3D から numpy 配列を構築
         point_ids = sorted(points3D.keys())
@@ -314,7 +345,8 @@ class GaussianModel(nn.Module):
 
     def forward(
         self, cam_qvec: np.ndarray, cam_tvec: np.ndarray,
-        cam_params: np.ndarray, width: int, height: int
+        cam_params: np.ndarray, width: int, height: int,
+        bg_color: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         順伝播を行う関数
@@ -331,6 +363,8 @@ class GaussianModel(nn.Module):
             画像の幅
         height: int
             画像の高さ
+        bg_color: Optional[torch.Tensor] = None
+            背景色
 
         Returns
         ----------
@@ -383,7 +417,7 @@ class GaussianModel(nn.Module):
         ).clamp(min=1e-8)
 
         # SH 評価で色を取得
-        colors = evaluate_sh(sh_coeffs, view_dirs)
+        colors = evaluate_sh(sh_coeffs, view_dirs, self.active_sh_degree)
 
         # ピクセル座標の計算
         x = means_cam[:, 0]
@@ -426,10 +460,20 @@ class GaussianModel(nn.Module):
         colors = colors[sort_indices]
         opacities = opacities[sort_indices]
 
-        # 画像範囲内の Gaussian のみ残す
-        sigma_max = 3.0 * torch.sqrt(
-            torch.max(cov2d[:, 0, 0], cov2d[:, 1, 1])
+        # 画像範囲内の Gaussian のみ残すためのマスクを作成
+        valid_indices = torch.nonzero(valid_mask, as_tuple=True)[0]
+        sorted_valid_indices = valid_indices[sort_indices]
+
+        # 2D 共分散の最大固有値から半径を計算して、画像範囲内にある Gaussian のみ残す
+        a = cov2d[:, 0, 0]
+        b = cov2d[:, 0, 1]
+        d = cov2d[:, 1, 1]
+        half_trace = (a + d) / 2
+        half_diff = (a - d) / 2
+        max_eig = half_trace + torch.sqrt(
+            half_diff * half_diff + b * b
         )
+        sigma_max = 3.0 * torch.sqrt(max_eig.clamp(min=0))
         visible = (
             (means2d[:, 0] + sigma_max > 0)
             & (means2d[:, 0] - sigma_max < width)
@@ -444,10 +488,20 @@ class GaussianModel(nn.Module):
         opacities = opacities[visible, 0]
         sigma_max_vis = sigma_max[visible].detach()
 
+        # 勾配を計算するため、means2d に retain_grad() を呼び出して保存
+        if means2d.requires_grad:
+            means2d.retain_grad()
+        self._last_means2d = means2d
+        self._last_visible_indices = sorted_valid_indices[visible]
+
+        # 背景色が None の場合は黒にする
+        if bg_color is None:
+            bg_color = torch.zeros(3, device=device)
+
         # カスタムラスタライザでレンダリング
         rendered = GaussianRasterizer.apply(
             means2d, inv_cov2d, colors, opacities,
-            sigma_max_vis, height, width
+            sigma_max_vis, height, width, bg_color
         )
         assert isinstance(rendered, torch.Tensor)
 
@@ -477,7 +531,7 @@ class GaussianModel(nn.Module):
 
     def accumulate_gradients(self):
         """
-        means の勾配ノルムを蓄積する関数
+        2D 位置勾配のノルムを蓄積する関数
 
         Parameters
         ----------
@@ -487,11 +541,18 @@ class GaussianModel(nn.Module):
         ----------
         None
         """
-        # means の勾配が存在する場合のみ蓄積
-        if self.means.grad is not None:
-            grad_norm = self.means.grad.norm(dim=-1)
-            self.grad_accum += grad_norm
-            self.grad_count += 1
+        # forward で保存された means2d を参照
+        if not hasattr(self, "_last_means2d"):
+            return
+        means2d = self._last_means2d
+        if means2d.grad is None:
+            return
+
+        # 元 Gaussian インデックスへ蓄積
+        grad_norm = means2d.grad.norm(dim=-1)
+        idx = self._last_visible_indices
+        self.grad_accum.index_add_(0, idx, grad_norm)
+        self.grad_count.index_add_(0, idx, torch.ones_like(grad_norm))
 
     def densify_and_prune(
         self, grad_threshold: float = 0.0002, scale_threshold: float = 0.01,
@@ -717,7 +778,9 @@ def quaternion_to_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
     return r
 
 
-def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
+def evaluate_sh(
+    sh_coeffs: torch.Tensor, dirs: torch.Tensor, active_degree: int = 3
+) -> torch.Tensor:
     """
     球面調和関数を評価する関数
 
@@ -727,6 +790,8 @@ def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
         SH 係数
     dirs: torch.Tensor
         正規化された視線方向ベクトル
+    active_degree: int = 3
+        評価に使う SH の最高次数
 
     Returns
     ----------
@@ -755,18 +820,21 @@ def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
     xx, yy, zz = x * x, y * y, z * z
     xy, yz, xz = x * y, y * z, x * z
 
+    # 評価する最高次数
+    max_degree = min(active_degree, int(sh_coeffs.shape[1] ** 0.5) - 1)
+
     # Degree 0
     result = c0 * sh_coeffs[:, 0]
 
     # Degree 1
-    if sh_coeffs.shape[1] > 1:
+    if max_degree >= 1 and sh_coeffs.shape[1] > 1:
         result = result + c1 * (
             -y * sh_coeffs[:, 1] + z * sh_coeffs[:, 2]
             - x * sh_coeffs[:, 3]
         )
 
     # Degree 2
-    if sh_coeffs.shape[1] > 4:
+    if max_degree >= 2 and sh_coeffs.shape[1] > 4:
         result = result + (
             c2[0] * xy * sh_coeffs[:, 4] + c2[1] * yz * sh_coeffs[:, 5]
             + c2[2] * (2.0 * zz - xx - yy) * sh_coeffs[:, 6]
@@ -775,7 +843,7 @@ def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
         )
 
     # Degree 3
-    if sh_coeffs.shape[1] > 9:
+    if max_degree >= 3 and sh_coeffs.shape[1] > 9:
         result = result + (
             c3[0] * y * (3.0 * xx - yy) * sh_coeffs[:, 9]
             + c3[1] * xy * z * sh_coeffs[:, 10]
@@ -786,7 +854,7 @@ def evaluate_sh(sh_coeffs: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
             + c3[6] * x * (xx - 3.0 * yy) * sh_coeffs[:, 15]
         )
 
-    # [0, 1] にクランプ
-    colors = result.clamp(min=0.0, max=1.0)
+    # 結果を色として返す
+    colors = result
 
     return colors
