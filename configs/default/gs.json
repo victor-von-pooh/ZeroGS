@@ -43,7 +43,7 @@
             "interval": 100,
             "stop_iteration": 5000,
             "opacity_reset_interval": 4000,
-            "grad_threshold": 0.05,
+            "grad_threshold": 5e-7,
             "scale_threshold": 0.01,
             "opacity_threshold": 0.005,
             "max_gaussians": 100000,
