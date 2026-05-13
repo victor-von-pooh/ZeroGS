@@ -153,7 +153,7 @@ logger.info(f"平均損失: {np.mean(train_loss_list):.4f}")
 
 # 評価
 logger.info("評価実行")
-resolution_scale = cfg["training"].get("resolution_scale", 1)
+resolution_scale = cfg["data"].get("resolution_scale", 1)
 metrics = evaluate(
     model, test_images, test_tensors,
     cameras, device, resolution_scale

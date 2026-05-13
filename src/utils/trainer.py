@@ -177,7 +177,7 @@ def train_gs(
     # 学習設定の取得
     num_iterations = cfg["training"]["iterations"]
     lambda_ssim = cfg["training"].get("lambda_ssim", 0.2)
-    resolution_scale = cfg["training"].get("resolution_scale", 1)
+    resolution_scale = cfg["data"].get("resolution_scale", 1)
 
     # 背景色
     bg_color_cfg = cfg["training"].get("bg_color", [0.0, 0.0, 0.0])

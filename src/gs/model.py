@@ -427,6 +427,24 @@ class GaussianModel(nn.Module):
         means2d_y = fy * y / z + cy
         means2d = torch.stack([means2d_x, means2d_y], dim=-1)
 
+        # フラスタム内にある Gaussian のみを残す
+        pad_x = width * 0.15
+        pad_y = height * 0.15
+        frustum_mask = (
+            (means2d_x > -pad_x) & (means2d_x < width + pad_x)
+            & (means2d_y > -pad_y) & (means2d_y < height + pad_y)
+        )
+        means_cam = means_cam[frustum_mask]
+        cov3d = cov3d[frustum_mask]
+        opacities = opacities[frustum_mask]
+        colors = colors[frustum_mask]
+        means2d = means2d[frustum_mask]
+
+        # カメラ座標系での位置
+        x = means_cam[:, 0]
+        y = means_cam[:, 1]
+        z = means_cam[:, 2]
+
         # 投影のヤコビアン
         j = torch.zeros(means_cam.shape[0], 2, 3, device=device)
         j[:, 0, 0] = fx / z
@@ -460,9 +478,10 @@ class GaussianModel(nn.Module):
         colors = colors[sort_indices]
         opacities = opacities[sort_indices]
 
-        # 画像範囲内の Gaussian のみ残すためのマスクを作成
+        # フラスタム内の Gaussian のインデックスを取得してソート
         valid_indices = torch.nonzero(valid_mask, as_tuple=True)[0]
-        sorted_valid_indices = valid_indices[sort_indices]
+        frustum_indices = valid_indices[frustum_mask]
+        sorted_valid_indices = frustum_indices[sort_indices]
 
         # 2D 共分散の最大固有値から半径を計算して、画像範囲内にある Gaussian のみ残す
         a = cov2d[:, 0, 0]
