@@ -4,12 +4,17 @@
 
 参考論文: [3D Gaussian Splatting for Real-Time Radiance Field Rendering](https://arxiv.org/abs/2308.14737) (Kerbl et al., 2023)
 
-## 背景と目的
+## 目的
 
-[GNN_Colmap](https://github.com/victor-von-pooh/GNN_Colmap) は、COLMAP の希薄復元（SfM）を GNN で置き換えることで、カメラ姿勢と 3D 点群を推定する。
-ZeroGS は、その **GNN_Colmap の出力がどれくらい良いのかを定量的に評価する** ために、3DGS による Novel View Synthesis パイプラインを提供する。
+COLMAP 互換フォーマット（`cameras` / `images` / `points3D` の txt または bin）と画像群を入力として、3D Gaussian Splatting で以下を行う学習・評価パイプラインを提供する。
 
-具体的には、GNN_Colmap が出力する COLMAP 互換フォーマット（cameras.txt / images.txt / points3D.txt）を入力として受け取り、3DGS で最適化・レンダリングし、PSNR / SSIM / LPIPS で評価する。
+- 初期点群の色推定 → Gaussian モデル初期化（位置・SH 係数・不透明度・スケール・回転）
+- L1 + SSIM 損失（`lambda_ssim = 0.2`）と Adam による最適化（デフォルト 7000 イテレーション）
+- Adaptive Density Control による Gaussian の追加・分割・削除
+- 画像を最適化用と評価用に分離した上での PSNR / SSIM / LPIPS による定量評価
+- 学習済みモデル（`final_model.pth`）と標準 3DGS PLY 形式（`gaussians.ply`）、レンダリング画像、学習曲線の出力
+
+入力データの想定供給元は [GNN_Colmap](https://github.com/victor-von-pooh/GNN_Colmap)（COLMAP 互換出力）。
 
 ## 設計方針
 
@@ -39,6 +44,7 @@ ZeroGS/
 │       └── points3D.txt (or points3D.bin)
 ├── outputs/                # 学習結果の出力先（Git 追跡対象外）
 │   └── gs/<date>/<time>/   #   モデル・PLY・レンダリング画像など
+├── paper/                  # 参考論文（arXiv PDF）
 ├── src/                    # ソースコード
 │   ├── gs/                 #   3DGS 固有のモデル定義・学習スクリプト
 │   │   ├── model.py        #     GaussianModel（レンダリング・ADC・SH）
@@ -99,6 +105,12 @@ GNN_Colmap の出力（COLMAP 互換フォーマット）と入力画像群を `
 - `renders/` — 評価用画像のレンダリング結果（正解画像との比較）
 
 詳細は [outputs/README.md](outputs/README.md) を参照。
+
+## paper — 参考論文
+
+3DGS および関連手法の参考論文（arXiv PDF）を配置する。実装中の参照用で、今後論文が増える可能性がある。
+
+詳細は [paper/README.md](paper/README.md) を参照。
 
 ## セットアップから実行まで
 
